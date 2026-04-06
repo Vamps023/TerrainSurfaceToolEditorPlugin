@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ProjectToBuild Include="..\..\..\..\all.sln">
+      <AdditionalProperties>Configuration=Debug;Platform=x64</AdditionalProperties>
+    </ProjectToBuild>
+    <ProjectToBuild Include="..\..\..\..\all.sln">
+      <AdditionalProperties>Configuration=Release;Platform=x64</AdditionalProperties>
+    </ProjectToBuild>
+  </ItemGroup>
+  <Target Name="Build">
+    <MSBuild Projects="@(ProjectToBuild)" BuildInParallel="true" Targets="sim\core\unigine_plugins\terrain_editor_plugin\terrain_editor_plugin;sim\core\unigine_plugins\terrain_editor_plugin\terrain_editor_plugin_lib;sim\core\unigine_plugins\terrain_editor_plugin\terrain_editor_plugin_tests" />
+  </Target>
+</Project>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<project name="sim.core.unigine_plugins.terrain_to_surface_plugin" default="build">
+  <import file="build_properties.xml" />
+  <import file="${buildfiles.dir}/packages/cpp_monolithic.xml" />
+  <import file="${buildfiles.dir}/ant_unigine_data.xml" />
+</project>

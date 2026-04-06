@@ -1,0 +1,51 @@
+#include "terrain_editor_world_logic.h"
+
+#include "GeometryHelper.h"
+#include <UnigineFileSystem.h>
+#include <UnigineMaterials.h>
+#include <UnigineObjects.h>
+#include <UnigineWorld.h>
+
+#include <queue>
+
+using namespace Unigine;
+using namespace Math;
+
+namespace TerrainEditorPlugin
+{
+    // Implement the init() function that will be called
+    // after the world script initialization
+    int TerrainEditorWorldLogic::init()
+    {
+        Unigine::Log::message("TerrainEditorWorldLogic::init(): called\n");
+
+
+        return 1;
+    }
+
+    // Implement the shutdown() function that will be called
+    // after the world script shut down
+    int TerrainEditorWorldLogic::shutdown()
+    {
+        Unigine::Log::message("TerrainEditorWorldLogic::shutdown(): called\n");
+
+        
+
+        return 1;
+    }
+
+    //void terrain_to_surface_plugin::UpdateAsyncThread()
+    //{
+    //    return 1;
+    //}
+
+    int TerrainEditorWorldLogic::update()
+    {
+
+        // remaining_terrain_creation = m_terrain_creator->process_requests();
+        // remaining_terrain_modifications = m_terrain_modifier->process_requests();
+
+
+        return 1;
+    }
+}

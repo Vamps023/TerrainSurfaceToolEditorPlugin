@@ -1,0 +1,132 @@
+#pragma once
+
+#include <UnigineMathLib.h>
+#include <UnigineObjects.h>
+#include <UnigineLog.h>
+#include <cassert>
+#include <string>
+#include <vector>
+
+inline std::vector<Unigine::Math::vec3> SampleLine(
+    const Unigine::Math::vec3& start,
+    const Unigine::Math::vec3& end,
+    const double               spacing)
+{
+    // Ensure that x_spacing is non-negative for meaningful results.
+    if (spacing <= 0.0)
+        return {};
+
+    // Determine the distance between the two points. If they're effectively
+    // coincident, just return a single sample point.
+    const auto distance = Unigine::Math::distance(start, end);
+    if (distance < Unigine::Math::Consts::EPS_D)
+        return { start };
+
+    // Normalise the sampling distance.
+    const auto dt = spacing / distance;
+
+    // Lerp at the given sampling distances.
+    std::vector<Unigine::Math::vec3> sampled_points;
+    for (double t{ 0.0 }; t < 1.0; t += dt)
+        sampled_points.emplace_back(Unigine::Math::lerp(start, end, t));
+
+    // The above loop will stop before it gets to the end (where t would
+    // equal 1), so we need to inject the last point.
+    sampled_points.emplace_back(end);
+
+    return sampled_points;
+}
+
+inline std::vector<Unigine::Math::vec3> SampleSurface(const std::vector<Unigine::Math::vec3> surface_verts, int sample_distance)
+{
+    std::vector<Unigine::Math::vec3> sample;
+
+    if (surface_verts.size() < 4)
+    {
+        Unigine::Log::message("You need at least vertices to sample a surface!\n");
+        return sample;
+    }
+
+    for (int i = 0; i < surface_verts.size() - 3; i += 2)
+    {
+        auto sample_1   = SampleLine(surface_verts[i], surface_verts[i + 3], sample_distance);
+        auto sample_2 = SampleLine(surface_verts[i + 1], surface_verts[i + 2], sample_distance);
+
+        for (int i = 0; i < sample.size(); i++)
+        {
+            
+        }
+    }
+
+
+    return sample;
+}
+
+inline std::vector<Unigine::Math::vec3> GetSurfaceVerticesFromMeshInWorldSpace(Unigine::ObjectMeshStaticPtr mesh,
+    std::string surface_name)
+{
+    // Initialise our return
+    std::vector<Unigine::Math::vec3> return_verts;
+
+    // Get our position and rotation, in order to translate mesh data into world coordinates.
+    auto mesh_position = mesh->getWorldPosition();
+    auto mesh_rotation = mesh->getWorldRotation();
+
+    // Find the id of our surface
+    int surface_id = mesh->findSurface(surface_name.c_str());
+    if (surface_id == -1)
+    {
+        return return_verts;
+    }
+
+    // Loop over our vertices
+    auto mesh_static = mesh->getMeshForceRAM();
+    auto num_of_vertices = mesh_static->getNumVertex(surface_id);
+    for (int i = 0; i < num_of_vertices; i++)
+    {
+        auto mesh_vert = mesh_static->getVertex(i, surface_id);
+        auto vert_in_world_space = mesh_position * mesh_rotation +
+            Unigine::Math::Vec3(mesh_vert.x, mesh_vert.y, mesh_vert.z);
+
+        return_verts.push_back(Unigine::Math::vec3(vert_in_world_space.x, vert_in_world_space.y, vert_in_world_space.z));
+    }
+
+    return return_verts;
+}
+
+inline double SnapToNearestMultiple(double value, double multiple)
+{
+    // Calculate the nearest multiple
+    double nearest_multiple = std::round(value / multiple) * multiple;
+    return nearest_multiple;
+}
+
+/// Returns 1 if the given point is inside the given triangle, 0 otherwise. Will also
+/// return a u and v value so that if need be the equation of the triangle plane can be used.
+///
+/// @param point        The point to test.
+/// @param vertex_one   The first triangle vertex.
+/// @param vertex_two   The second triangle vertex.
+/// @param vertex_three The third triangle vertex.
+/// @param u            The u value to be used in the equation of the triangle plane.
+/// @param point        The v value to be used in the equation of the triangle plane.
+///
+/// @return 1 on success, 0 otherwise.
+
+inline int pointInTriangle(Unigine::Math::Vec3 point, Unigine::Math::Vec3 vertex_one, Unigine::Math::Vec3 vertex_two, Unigine::Math::Vec3 vertex_three, double &u, double &v)
+{
+    // Uses barycentric technique. See http://www.blackpawn.com/texts/pointinpoly/default.html
+    Unigine::Math::Vec3 v0 = vertex_three - vertex_one;
+    Unigine::Math::Vec3 v1 = vertex_two - vertex_one;
+    Unigine::Math::Vec3 v2 = point - vertex_one;
+
+    double dot00 = dot(v0, v0);
+    double dot01 = dot(v0, v1);
+    double dot02 = dot(v0, v2);
+    double dot11 = dot(v1, v1);
+    double dot12 = dot(v1, v2);
+    double inv_denom = 1 / (dot00 * dot11 - dot01 * dot01);
+    u = (dot11 * dot02 - dot01 * dot12) * inv_denom;
+    v = (dot00 * dot12 - dot01 * dot02) * inv_denom;
+    return u > 0 && v > 0 && u + v < 1 ? 1 : 0;
+}

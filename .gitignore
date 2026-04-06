@@ -1,0 +1,51 @@
+# Build directories
+build/
+*.obj
+*.lib
+*.exp
+*.dll
+*.pdb
+*.ilk
+*.exe
+
+# IDE files
+.vs/
+*.vcxproj*
+*.sln
+*.user
+*.vcxitems
+*.vcxitems.filters
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# Qt generated files
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Unigine temp files
+world_builder/temp/
+*.png
+
+# Deployment (we'll build/deploy locally)
+deploy/

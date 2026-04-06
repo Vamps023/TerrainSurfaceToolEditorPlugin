@@ -1,0 +1,26 @@
+/// @file
+/// @copyright © 2023 Oktal Sydac
+/// This is unpublished proprietary source code. The copyright notice above
+/// does not evidence any actual or intended publication of such source code.
+#pragma once
+#include <UnigineBase.h>
+#include "terrain_editor_plugin/terrain_editor_plugin.h"
+
+extern "C" UNIGINE_EXPORT void* CreatePlugin()
+{
+    Unigine::EngineWindowPtr main_window = Unigine::WindowManager::getMainWindow();
+    if (main_window != nullptr)
+    {
+        return new terrain_editor_plugin();
+    }
+    else
+    {
+        Unigine::Log::warning("TODO: Support non-runtime launch\n");
+    }
+    return nullptr;
+}
+
+extern "C" UNIGINE_EXPORT void ReleasePlugin(void* plugin)
+{
+    delete static_cast<terrain_editor_plugin*>(plugin);
+}

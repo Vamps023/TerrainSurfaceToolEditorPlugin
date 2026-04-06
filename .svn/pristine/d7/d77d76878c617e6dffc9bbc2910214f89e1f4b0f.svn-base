@@ -1,0 +1,144 @@
+#pragma once
+
+#include "object_mesh_helper.h"
+#include "UnigineObjects.h"
+#include <queue>
+#include <vector>
+
+namespace
+{
+    // Helper methods for multithreading operations
+    int round_up(int value, int round);
+    int group_threads(int width, int kernel_size);
+}
+
+class terrain_manipulator
+{
+public:
+    terrain_manipulator();
+    ~terrain_manipulator();
+
+    // Blend mode for the brush height operations
+    // Note that this is not the same as Unigine::Landscape::BLENDING_MODE enum
+    // which is for blending between lmpas
+    enum HeightBlendMode
+    {
+        Alpha    = 0,
+        Additive = 1
+    };
+
+    enum PaintTarget
+    {
+        Height = 0,
+        Albedo = 1
+    };
+
+    struct BrushOperationData
+    {
+        Unigine::MaterialPtr brush_material;
+        float                brush_height;
+        float                brush_size;
+        float                brush_rotation;
+        float                brush_opacity     = 1;
+        HeightBlendMode      height_blend_mode = HeightBlendMode::Alpha;
+        bool                 modify_heights    = false;
+        bool                 modify_albedo     = false;
+    };
+
+    void RaiseTerrainToSurface(Unigine::NodePtr node, std::string surface_name, Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material);
+
+    void RaiseTerrainToBoundingBox(Unigine::NodePtr node, Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material);
+
+    void RaiseTerrainToVertices(std::vector<Unigine::Math::dvec3> verts, Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material);
+
+    void terrain_manipulator::RaiseTerrainToVertices(std::vector<std::pair<Unigine::Math::dvec3, double>> vertices_and_rotations,
+                                                     Unigine::Math::dvec2 brush_size,
+                                                     Unigine::MaterialPtr brush_material);
+
+    void SmoothTerrainAtVertices(std::vector<std::pair<Unigine::Math::dvec3, double>> vertices_and_rotations,
+                                 Unigine::Math::dvec2                                 brush_size,
+                                 Unigine::MaterialPtr                                 brush_material);
+
+    void HeightImageMakeRGBA32F(Unigine::ImagePtr height_image);
+    void ScaleHeightImage(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
+
+    void ScaleHeightRange(Unigine::ImagePtr height_image, float min_height, float max_height);
+
+    void SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
+    void SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap,
+                                   Unigine::UGUID                guid,
+                                   int                           id,
+                                   Unigine::LandscapeTexturesPtr buffer,
+                                   Unigine::Math::ivec2          coord,
+                                   int                           data_mask,
+                                   Unigine::ImagePtr             height_image);
+    void SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap,
+                                   Unigine::UGUID                guid,
+                                   int                           id,
+                                   Unigine::LandscapeTexturesPtr buffer,
+                                   Unigine::Math::ivec2          coord,
+                                   int                           data_mask,
+                                   Unigine::TexturePtr           height_texture,
+                                   bool                          overwrite_with_32bit_float_data);
+
+    void SetTerrainAlbedo(Unigine::LandscapeLayerMapPtr lmap, std::string image_file_path);
+
+    void PaintTerrainHeightAt(const Unigine::Math::Vec3& world_position, BrushOperationData brush_data);
+
+    bool   IsTerrainManipulationInProgress() const;
+    size_t NumberOfRemainingOperations() const;
+    void   BlockBrushOperations(bool block);
+    void   SetBlockOperationCount(int count); // specify the number of blocking operations
+
+private:
+    void SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap,
+                                   Unigine::UGUID                guid,
+                                   int                           id,
+                                   Unigine::LandscapeTexturesPtr buffer,
+                                   Unigine::Math::ivec2          coord,
+                                   int                           data_mask,
+                                   Unigine::MaterialPtr          brush);
+
+    void RaiseTerrainToVertex(Unigine::Math::dvec3          vertex,
+                              Unigine::Math::dvec2          brush_size,
+                              Unigine::MaterialPtr          brush_material,
+                              float                         brush_rotation = 0,
+                              Unigine::LandscapeLayerMapPtr map_to_operate = nullptr);
+    void SmoothTerrainAtVertex(Unigine::Math::dvec3          vertex,
+                               Unigine::Math::dvec2          brush_size,
+                               Unigine::MaterialPtr          brush_material,
+                               float                         brush_rotation = 0,
+                               Unigine::LandscapeLayerMapPtr map_to_operate = nullptr);
+
+    void CalculateDrawingRegion(Unigine::Math::dvec3          brush_local_position,
+                                Unigine::Math::quat           brush_local_rotation,
+                                Unigine::Math::dvec2          half_size,
+                                Unigine::LandscapeLayerMapPtr closest_lmap,
+                                Unigine::Math::ivec2&         drawing_region_coord,
+                                Unigine::Math::ivec2&         drawing_region_size);
+
+    void PerformTerrainManipulationOperation(Unigine::LandscapeLayerMapPtr lmap,
+                                             Unigine::Math::ivec2          pixel_coord,
+                                             Unigine::Math::ivec2          resolution);
+    void OnTextureDraw(Unigine::UGUID guid, int id, Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord, int data_mask);
+    void ApplyBrush(BrushOperationData const&     operation,
+                    Unigine::UGUID                guid,
+                    int                           id,
+                    Unigine::LandscapeTexturesPtr buffer,
+                    Unigine::Math::ivec2          coord,
+                    int                           data_mask);
+
+private:
+    std::queue<BrushOperationData> m_brush_buffer;
+
+    bool m_in_progress        = false;
+    bool m_operations_blocked = false;
+    int  m_lock_count{0}; // number of blocking external operatiosn that lock any terrain edition
+
+public:
+    static Unigine::MaterialPtr getCircularTerrainBrushWithFalloff(double falloff, double padding = 0, std::string DEFAULT = "circle_medium.brush");
+    static Unigine::MaterialPtr getSquareTerrainBrushWithFalloff(double falloff, int inner_size, std::string DEFAULT = "circle_medium.brush");
+
+    static Unigine::MaterialPtr getTerrainTileBrush(Unigine::ImagePtr height_image);
+    static Unigine::MaterialPtr getTerrainTileBrush(Unigine::TexturePtr height_texture);
+};

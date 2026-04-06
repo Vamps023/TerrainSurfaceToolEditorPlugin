@@ -1,0 +1,343 @@
+#pragma once
+#include <map>
+#include <algorithm>
+#include <math.h>
+
+#include "Unigine.h"
+#include "UnigineObjects.h"
+
+#include "object_mesh_helper.h"
+#include "GeometryHelper.h"
+
+static const auto DIR_DOWN = Unigine::Math::Vec3(0, 0, -1);
+
+inline bool TerrainTestFetchAtPosition(Unigine::Math::dvec2 position) 
+{
+    Unigine::ObjectLandscapeTerrainPtr terrain = Unigine::Landscape::getActiveTerrain();
+    if (terrain == nullptr)
+        return false;
+
+    auto landscape_fetch = Unigine::LandscapeFetch::create();
+
+    bool fetched = landscape_fetch->fetchForce(position);
+
+    return fetched;
+}
+
+// checking if a terrain tile with this origin exists already 
+inline bool CheckTerrainTileWithOriginExists(Unigine::Math::dvec3 terrain_origin)
+{
+    Unigine::ObjectLandscapeTerrainPtr terrain = Unigine::Landscape::getActiveTerrain();
+    if (terrain == nullptr)
+        return false;
+
+    // Check if a terrain chunk at the given position already exists
+    for (int i = 0; i < terrain->getNumChildren(); i++)
+    {
+        auto child = terrain->getChild(i);
+        if (child->isValid() && child->isLandscapeLayer())
+        {
+            auto transformPosition = child->getTransform();
+            auto translation = transformPosition.getTranslate();
+            if (terrain_origin == translation)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+inline Unigine::LandscapeLayerMapPtr GetClosestLandscapeLayerMap(Unigine::ObjectLandscapeTerrainPtr terrain, const Unigine::Math::dvec3 test_position)
+{
+    Unigine::LandscapeLayerMapPtr closest_lmap = nullptr;
+    if (terrain)
+    {
+        for (int i = 0; i < terrain->getNumChildren(); i++)
+        {
+            if (auto lmap = Unigine::checked_ptr_cast<Unigine::LandscapeLayerMap>(terrain->getChild(i)); lmap != nullptr)
+            {
+                if (lmap->getWorldBoundBox().inside(test_position))
+                {
+                    if (!closest_lmap || lmap->getOrder() > closest_lmap->getOrder())
+                        closest_lmap = lmap;
+                }
+            }
+        }
+    }
+
+    return closest_lmap;
+}
+
+
+/// Takes a vector of (Object, surface_index) pairs and determines whether the Object's surface lies within
+/// the given ObjectTerrain (either partially or wholly). The list of Objects that do lie within the
+/// ObjectTerrain are returned.
+///
+/// @param terrain         The terrain tile to process.
+/// @param candidate_pairs A vector of pairs where the first element is the Object and the second
+///                        element is the surface of the Object used to determine whether the Object
+///                        lies in the tile.
+///
+/// @return A vector of Objects that are contained within the ObjectTerrain (from the list of candidate pairs).
+inline std::vector<ObjectSurface> getObjectsWithinBoundingBox(const Unigine::Math::WorldBoundBox& wbb,
+    const std::vector<ObjectSurface>& candidate_pairs, float radius = 0.0f)
+{
+    std::vector<ObjectSurface> return_value;
+    for (auto pair : candidate_pairs)
+    {
+        // Use the bound min of the surface id as a means for working out
+        // whether the object lies within the ObjectTerrain.
+        Unigine::ObjectPtr object = pair.first;
+        int surface_id = pair.second;
+
+        // Minimum (x, y) of the Object is greater than the minimum (x, y) of the ObjectTerrain
+        // and the maximum (x,y) of the ObjectTerrain is greater than the minimum (x, y) of the Object
+        // we have an Object whose surface lies either partially or fully in the terrain tile.
+        // This way of evaluating was more reliable than intersection testing (raycasting) and simpler too.
+        Unigine::Math::WorldBoundBox object_bounding_box = object->getWorldBoundBox();
+        object_bounding_box.set(object_bounding_box.minimum - radius, object_bounding_box.maximum + radius);
+        if (wbb.insideValid(object_bounding_box))
+            return_value.push_back(pair);
+    }
+
+    return return_value;
+}
+
+/// Generates a height image for the LandscapeLayerMap with the given Object providing the Object has surface
+/// that matches the given surface regex. Only the matching surface is used to calculate the
+/// updated height map of the ObjectTerrain.
+///
+/// @param terrain            The terrain tile to perform raising/lowering on.
+/// @param object_surface     The Object surface that we are potentially calculating heights for (providing there is a matching surface).
+/// @param heights_image      The image to store our height data
+/// @param height_data        A map that is populated with key and the value that are both the indices
+///                           where the base surface lies (ie this map will contain keys that correspond
+///                           to the modified height points).
+
+inline bool GetSurfaceHeightsForTerrain(Unigine::LandscapeLayerMapPtr terrain_tile, ObjectSurface object_surface, Unigine::ImagePtr heights_image, std::map<int, int> &height_data)
+{
+    auto iworld_transform = terrain_tile->getIWorldTransform();
+    auto terrain_res = terrain_tile->getResolution();
+    auto size = terrain_tile->getSize();
+    auto step = size / Unigine::Math::Vec2(terrain_res.x, terrain_res.y);
+
+    bool modified = false;
+
+    std::vector<Unigine::Math::dvec3> vertices_world_space;
+    size_t num_vertices = appendBaseVerts(object_surface, vertices_world_space);
+
+    // Consider each triangle in the mesh
+    for (int i = 2; i < num_vertices; i += 3)
+    {
+        Unigine::Math::Vec3 local_vertex_one = iworld_transform * Unigine::Math::Vec3(vertices_world_space[i]);
+        Unigine::Math::Vec3 local_vertex_two = iworld_transform * Unigine::Math::Vec3(vertices_world_space[i - 1]);
+        Unigine::Math::Vec3 local_vertex_three = iworld_transform * Unigine::Math::Vec3(vertices_world_space[i - 2]);
+        Unigine::Math::Vec3 test_vertex_one = Unigine::Math::Vec3(local_vertex_one.x, local_vertex_one.y, 0.0);
+        Unigine::Math::Vec3 test_vertex_two = Unigine::Math::Vec3(local_vertex_two.x, local_vertex_two.y, 0.0);
+        Unigine::Math::Vec3 test_vertex_three = Unigine::Math::Vec3(local_vertex_three.x, local_vertex_three.y, 0.0);
+
+        int x_grid_one = int(local_vertex_one.x / step.x);
+        int y_grid_one = int(local_vertex_one.y / step.y);
+        int x_grid_two = int(local_vertex_two.x / step.x);
+        int y_grid_two = int(local_vertex_two.y / step.y);
+        int x_grid_three = int(local_vertex_three.x / step.x);
+        int y_grid_three = int(local_vertex_three.y / step.y);
+        int min_x = std::max(0, std::min(x_grid_three, std::min(x_grid_one, x_grid_two)));
+        int min_y = std::max(0, std::min(y_grid_three, std::min(y_grid_one, y_grid_two)));
+        int max_x = std::min(terrain_res.x - 1, std::max(x_grid_three, std::max(x_grid_one, x_grid_two)));
+        int max_y = std::min(terrain_res.y - 1, std::max(y_grid_three, std::max(y_grid_one, y_grid_two)));
+
+        // By identifying min and max x and y grid points we have localised the grid area in which the triangle
+        // covers. Iterate over the grid points and determine which grids live in the triangle. This is an
+        // approximation - we only consider the centre of the grid for speed purposes.
+        for (int x = min_x; x <= max_x; x++)
+        {
+            // This function should be able to deal with objects that span terrain tiles
+            if (x < 0 || x >= terrain_res.x)
+                continue;
+
+            for (int y = min_y; y <= max_y; y++)
+            {
+                // This function should be able to deal with objects that span terrain tiles
+                if (y < 0 || y >= terrain_res.y)
+                    continue;
+
+                // The centre of the grid is likely to only be in one triangle, hence it will only be in the
+                // heights map if the grid has already been determined to be in another triangle. We do this to reduce
+                // processing time although if this is not fit for purpose we can relax this restriction.
+                int index = x + terrain_res.x * y;
+                // we use the fact that we only set alpha for the pixels we are raising to keep track of which pixels we have assigned. 
+                if (heights_image->get2D(x, y).f.a <= 0.0)
+                {
+                    double u;
+                    double v;
+                    // Is the centre of the grid in the triangle?
+                    if (pointInTriangle(Unigine::Math::Vec3((x + 0.5) * step.x, (y + 0.5) * step.y, 0.0), test_vertex_one, test_vertex_two, test_vertex_three, u, v) == 1)
+                    {
+                        // To get the actual height to be used in the height map, calculate the point on the plane represented by the triangle and
+                        // use the z coordinate.
+                        Unigine::Math::Vec3 point = local_vertex_one + ((local_vertex_three - local_vertex_one) * u) + ((local_vertex_two - local_vertex_one) * v);
+
+                        Unigine::Image::Pixel pix;
+                        pix.f.r = point.z;
+                        pix.f.g = point.z;
+                        pix.f.b = point.z;
+                        pix.f.a = 1.0f;
+                        heights_image->set2D(x, y, pix);
+                        modified = true;
+
+                        height_data[index] = index;
+                    }
+                }
+            }
+        }
+    }
+    return modified;
+}
+
+/// For a given map containing terrain grid points that are on the track, this
+/// function flattens to track level given ObjectTerrain for points that are up to a fall_off_distance
+/// away from the track, and calculates alpha blend values to smooth the terrain with the existing terrain for 
+/// points that are greater than the flat_distance but up to the fall_off_distance away from the track.
+/// The determination of the distance of a height point is away from the track isn't exact, since this
+/// allows the algorithm to perform in a very efficient manner (efficiency is more important than exactness
+/// in this algorithm, since we are processing potentially 8192 by 8192 height points). 
+/// PLEASE NOTE - This is still an expensive operation
+///
+/// @param terrain_tile       The terrain tile to process.
+/// @param heights_image      The image to store our height data
+/// @param height_data        A map containing the height points that have been modified to smoooth from
+/// @param fall_off_distance  How far from the track should we flatten the terrain.
+/// @param smoothing_distance How far after the fall off distance should we smooth the terrain.
+
+inline void smoothTerrainHeights(Unigine::LandscapeLayerMapPtr terrain_tile, Unigine::ImagePtr heights_image, std::map<int, int> &height_data, double flat_distance, double fall_off_distance)
+{
+    auto iworld_transform = terrain_tile->getIWorldTransform();
+    auto terrain_res = terrain_tile->getResolution();
+    auto size = terrain_tile->getSize();
+    auto step = size / Unigine::Math::Vec2(terrain_res.x, terrain_res.y);
+    auto pixels_per_unit = Unigine::Math::Vec2{ terrain_tile->getResolution() } / Unigine::Math::Vec2{ terrain_tile->getSize() };
+
+    int return_value = 1;
+
+    auto fall_off_steps2 = Unigine::Math::ivec2(pixels_per_unit * fall_off_distance);
+    auto fall_off_steps = fall_off_steps2.max();
+
+    auto flat_steps2 = Unigine::Math::ivec2(pixels_per_unit * flat_distance);
+    auto flat_steps = flat_steps2.max();
+    auto total_steps2 = Unigine::Math::ivec2(pixels_per_unit * (flat_distance + fall_off_distance));
+    auto total_steps = total_steps2.max();
+
+    // Keep a list of grid points (i.e. indices) we want to investigate
+    std::vector<int>    indices;
+    std::vector<int>    last_indices;
+
+    for (const auto &[pixel_index, source_index] : height_data)
+        indices.push_back(pixel_index);
+
+
+    // Helper function for propagating closest track point to neighbouring
+    // grid points.
+    //
+    // @param x X grid coordinate of the neighbour.
+    // @param y Y grid coordinate of the neighbour.
+    //
+    // @pre x is in the range [0, size_x - 1]
+    // @pre y is in the range [0, size_y - 1]
+    auto considerGridPoint = [&indices, heights_image, &height_data, terrain_res, total_steps, flat_steps, fall_off_steps](int x, int y, int current_step, int pixel_index)
+    {
+        int new_index = x + terrain_res.x * y;
+
+        // Only look at points that have not been previously looked at
+        if (height_data.count(new_index) == 0)
+        {
+
+            Unigine::Image::Pixel new_pix;
+
+            int reference_index = height_data[pixel_index];
+            int reference_x = reference_index % terrain_res.x;
+            int reference_y = reference_index / terrain_res.x;
+            auto reference_pixel = heights_image->get2D(reference_x, reference_y);
+
+            new_pix = reference_pixel;
+            // reference_x and reference_y are the closest track grid points
+            // to x and y. If i + 1 is less than fall_off_steps then we just set
+            // the terrain height to the same height as reference_x, reference_y
+            // (this will flatten the track). Otherwise we use the height at
+            // reference_x and reference_y as the basis for our Smoothstep calculations.
+            if (current_step +1 >= flat_steps)
+            {
+                double t = double(total_steps - current_step - 1) / double(fall_off_steps);
+                double smoothstep = 3.0 * pow(t, 2.0) - 2.0 * pow(t, 3.0);
+
+                new_pix.f.a = static_cast<float>(smoothstep);
+            }
+
+            // Update the height point, and propagate the index in the height map.
+            // Also keep track of the fact that new_index has been examined on this iteration.
+
+            heights_image->set2D(x, y, new_pix);
+            //terrain.setHeight(x, y, new_height);
+            // keep track of the source of our height, may not be necessary we could just use the r value?
+            height_data[new_index] = height_data[pixel_index];
+            indices.push_back(new_index);
+        }
+    };
+
+
+
+
+    // Now that we've determined all of the terrain grid points that are on the track bed, we need
+    // to span out from the track for the total fall off number of grids and set the height point for
+    // all grids that are within that distance of the track. This is done quite crudely (but efficiently)
+    // by considering only direct neighbour grids of the track grids.
+
+    // this doesnt seem like it accounts for track on an angle correctly? as we only consider orthogonal neighbours and not diagonals?
+    for (int current_step = 0; current_step < total_steps; current_step++)
+    {
+        // Make a copy of the last set of grid points we looked at, and
+        // get ready to create a new list of them.
+
+        last_indices.swap(indices);
+        indices.clear();
+
+        // For each grid point that we examined last pass, find the direct neighbouring grid points
+        // that we haven't seen yet, then set their distance and height.
+        //
+        // This essentially identifies the track height point that each grid point is closest to, so
+        // we can use that height as a reference for either flattening the track or smoothing the track,
+        // depending on how far out we are (the value of i).
+        for (int pixel_index : last_indices)
+        {
+
+
+            int x = pixel_index % terrain_res.x;
+            int y = pixel_index / terrain_res.x;
+
+            // Consider right neighbour
+            if (x + 1 < terrain_res.x)
+                considerGridPoint(x + 1, y, current_step, pixel_index);
+
+            // Now the left neighbour
+            if (x - 1 >= 0)
+                considerGridPoint(x - 1, y, current_step, pixel_index);
+
+            // Now the up neighbour
+            if (y + 1 < terrain_res.y)
+                considerGridPoint(x, y + 1, current_step, pixel_index);
+
+            // Now the down neighbour
+            if (y - 1 >= 0)
+                considerGridPoint(x, y - 1, current_step, pixel_index);
+        }
+
+        last_indices.clear();
+
+        // this was able to call out to update a progress dialog in editor 1
+        // now we would need to update some progress that could be accessed externally
+        // progress = (current_step + 1)/total_steps;
+    }
+
+    return;
+}

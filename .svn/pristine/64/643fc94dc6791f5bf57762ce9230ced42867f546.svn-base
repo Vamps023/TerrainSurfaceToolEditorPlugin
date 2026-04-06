@@ -1,0 +1,70 @@
+#pragma once
+
+#include "UnigineObjects.h"
+
+#include <string>
+#include <queue>
+
+class terrain_creator
+{
+public:
+    terrain_creator();
+    ~terrain_creator();
+
+    struct TerrainCreationData
+    {
+        Unigine::Math::dvec3       position;
+        Unigine::Math::ivec2       size;
+        Unigine::Math::ivec2       resolution;
+        std::string lmap_name;
+        std::string lmap_path;
+        double      height_scale;
+        float       base_height;
+    };
+
+    void RequestTerrainCreation(std::string          file_path_to_lmap,
+                                        Unigine::Math::ivec2 request_coordinate,
+                                        Unigine::Math::dvec3 request_position,
+                                        Unigine::Math::ivec2 size,
+                                        Unigine::Math::ivec2 resolution,
+                                        double base_height);
+
+    int init();
+    int update();
+    int shutdown();
+
+    void InitiateTerrainCreation();
+    int NumberOfRemainingOperations();
+    int WasTerrainCreated() { return m_terrain_created; }
+    TerrainCreationData GetNextTerrainRequest();
+    
+
+
+private:
+    void CreateTerrainForPosition(TerrainCreationData creation_data);
+
+
+    void OnLmapCreatorCreate(const Unigine::LandscapeMapFileCreatorPtr &creator, const Unigine::LandscapeImagesPtr &images, int x, int y);
+    void OnLmapCreatorBegin(const Unigine::LandscapeMapFileCreatorPtr &creator);
+    void OnLmapCreatorProgress(const Unigine::LandscapeMapFileCreatorPtr &creator);
+    void OnLmapCreatorEnd(const Unigine::LandscapeMapFileCreatorPtr &creator);
+    
+    Unigine::EventConnections connections;
+
+    struct CreationProgress
+    {
+        int tiles_to_create = 0;
+        int tiles_remaining = 0;
+        float current_tile_progress = 0;
+    };
+    CreationProgress m_terrain_creation_progress;
+
+    // flag for terrain was created this frame, to use for notifications
+    bool m_terrain_created = false;
+
+    // double ended queue because we want to be able to look in it to avoid adding duplicate requests
+    // only because we are calculating tiles for each segment bounds which involves overlap.
+    std::deque<TerrainCreationData> m_terrain_creation_request;
+
+    std::queue<TerrainCreationData> m_terrain_creation_data_buffer;
+};

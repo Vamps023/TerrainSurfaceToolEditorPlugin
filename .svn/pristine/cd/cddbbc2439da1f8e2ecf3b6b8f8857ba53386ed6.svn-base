@@ -1,0 +1,302 @@
+
+#include <string>
+#include <iostream>
+#include <iomanip>
+#include <sstream>
+
+#include <UnigineMathLib.h>
+#include <UnigineFileSystem.h>
+#include <UnigineWorld.h>
+
+#include "unigine2_graphics/collapsible_widget.h"
+
+#include "terrain_paint_gui.h"
+#include "unigine2_graphics/unigine2_utilities.h"
+
+terrain_paint_gui::terrain_paint_gui(Unigine::GuiPtr translation_gui, Unigine::Vector<Unigine::ImagePtr> brush_icons, float initial_size, float initial_angle, float initial_height, float initial_opacity, int initial_blend_mode)
+    :brush_textures_icons(brush_icons)
+{
+
+    // this is our main collabisble widget that we are creating for someone to add to a gui somewhere.
+    m_collapsible_widget = std::shared_ptr<CollapsibleWidget>(new CollapsibleWidget(translation_gui->translate("Edit Terrain"), 358));
+    // initialise our gui to hidden
+    m_collapsible_widget->hide();
+
+
+    // the create a container just for the collapsible content widget
+    // we don't do anything special on this widget, we will leave it to the widgets we add to it to make it
+    // easier to separate those out if they were to go somewhere else.
+    auto collapsible_content_container = Unigine::WidgetVBox::create(0, 2);
+    m_collapsible_widget->addContentWidget(collapsible_content_container);
+
+    // the actual container of our components
+    auto main_content_container = CreateMainContentWidget(translation_gui, initial_size, initial_angle, initial_height, initial_opacity, initial_blend_mode);
+    //main_content_container->setFontColor(unigine2_ui::colors::TAB_BOX_FONT_COLOR);
+    collapsible_content_container->addChild(main_content_container);
+
+
+}
+
+
+Unigine::WidgetPtr terrain_paint_gui::CreateMainContentWidget(Unigine::GuiPtr translation_gui, float initial_size, float initial_angle, float initial_height, float initial_opacity, int initial_blend_mode)
+{
+    auto main_content_container = Unigine::WidgetVBox::create(0, 4);
+
+    // container for editing the terrain
+    auto buttons_container = Unigine::WidgetHBox::create(5, 0);
+
+    auto edit_mode_button = Unigine::WidgetButton::create();
+    edit_mode_button->setWidth(40);
+    edit_mode_button->setHeight(30);
+    edit_mode_button->setText(translation_gui->translate("Start Editing"));
+    edit_mode_button->setToolTip(translation_gui->translate("Enter terrain editing mode."));
+    edit_mode_button->setTextAlign(Unigine::Gui::ALIGN_CENTER);
+    edit_mode_button->setToggleable(true);
+    edit_mode_button->arrange();
+
+    edit_mode_button->getEventChanged().connectUnsafe(
+        [this](const Unigine::WidgetPtr &apply_button_widget)
+    {
+        auto button_widget = Unigine::checked_ptr_cast<Unigine::WidgetButton>(apply_button_widget);
+        if (button_widget->isValid())
+        {
+             if (m_toggle_cb)
+                 m_toggle_cb(button_widget->isToggled());
+        }
+    }
+    );
+
+    buttons_container->addChild(edit_mode_button, Unigine::Gui::ALIGN_RIGHT);
+    // possibly include a remove all terrain button
+    main_content_container->addChild(buttons_container, Unigine::Gui::ALIGN_EXPAND);
+
+
+    // painting tools
+    auto paint_tool_container = Unigine::WidgetTabBox::create();
+
+    paint_tool_container->addTab(translation_gui->translate("Height Painter"));
+
+    // Potentially add smoothing tool option here.
+    // that would need to change the remaining boxes.
+    // values would be stored separately to height paint to allow switching without needing to reset all the data?
+
+    auto hbox = Unigine::WidgetHBox::create(5);
+    paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    auto label = Unigine::WidgetLabel::create(translation_gui->translate("Brush"));
+    hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    auto gridbox = Unigine::WidgetGridBox::create(6);
+    paint_tool_container->addChild(gridbox, Unigine::Gui::ALIGN_LEFT);
+    for (int i = 0; i < brush_textures_icons.size(); ++i)
+    {
+        // TODO:: make these sprites with selection borders instead of buttons?
+        // maybe could share gui component with the asset browser style, but need
+        // to clean it up and make it more generic first
+        // would need to update the function to reset other button/sprite selection on change
+        auto button = Unigine::WidgetButton::create();
+        button->setImage(brush_textures_icons[i]);
+        button->getEventClicked().connectUnsafe(
+            [this, i](const Unigine::WidgetPtr &apply_button_widget, int mouse_buttons)
+            {
+                if (m_select_brush_texture_cb)
+                    m_select_brush_texture_cb(i);
+            }
+        );
+        gridbox->addChild(button, Unigine::Gui::ALIGN_LEFT);
+    }
+
+    hbox = Unigine::WidgetHBox::create(5);
+    paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    label = Unigine::WidgetLabel::create(translation_gui->translate("Size (m)"));
+    label->setWidth(100);
+    hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    height_brush_size_edit_line = Unigine::WidgetEditLine::create();
+    height_brush_size_edit_line->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    height_brush_size_edit_line->setText(Unigine::String::ftoa(initial_size));
+    hbox->addChild(height_brush_size_edit_line, Unigine::Gui::ALIGN_LEFT);
+    height_brush_size_edit_line->getEventChanged().connect(height_brush_size_edit_line_callback,
+        [this](const Unigine::WidgetPtr &widget)
+        {
+            auto edit_widget = Unigine::checked_ptr_cast<Unigine::WidgetEditLine>(widget);
+            if (edit_widget->isValid())
+            {
+                float value = Unigine::String::atof(edit_widget->getText());
+
+                if (m_brush_size_cb)
+                    m_brush_size_cb(value);
+            }
+        }
+     );
+
+
+    // not using spacing
+    //hbox = Unigine::WidgetHBox::create(5);
+    //paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    //label = Unigine::WidgetLabel::create("Spacing");
+    //label->setWidth(100);
+    //hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    //auto height_brush_spacing_edit_line = Unigine::WidgetEditLine::create();
+    //height_brush_spacing_edit_line->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    //hbox->addChild(height_brush_spacing_edit_line, Unigine::Gui::ALIGN_LEFT);
+
+    hbox = Unigine::WidgetHBox::create(5);
+    paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    label = Unigine::WidgetLabel::create(translation_gui->translate("Angle"));
+    label->setWidth(100);
+    hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    height_brush_angle_edit_line = Unigine::WidgetEditLine::create();
+    height_brush_angle_edit_line->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    height_brush_angle_edit_line->setText(Unigine::String::ftoa(initial_angle));
+    hbox->addChild(height_brush_angle_edit_line, Unigine::Gui::ALIGN_LEFT);
+    height_brush_angle_edit_line->getEventChanged().connect(height_brush_angle_edit_line_callback,
+        [this](const Unigine::WidgetPtr &widget)
+    {
+        auto edit_widget = Unigine::checked_ptr_cast<Unigine::WidgetEditLine>(widget);
+        if (edit_widget->isValid())
+        {
+            float value = Unigine::String::atof(edit_widget->getText());
+
+            if (m_brush_angle_cb)
+                m_brush_angle_cb(value);
+        }
+    }
+    );
+
+
+    hbox = Unigine::WidgetHBox::create(5);
+    paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    label = Unigine::WidgetLabel::create(translation_gui->translate("Opacity"));
+    label->setWidth(100);
+    hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    height_brush_opacity_edit_line = Unigine::WidgetEditLine::create();
+    height_brush_opacity_edit_line->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    height_brush_opacity_edit_line->setText(Unigine::String::ftoa(initial_opacity));
+    hbox->addChild(height_brush_opacity_edit_line, Unigine::Gui::ALIGN_LEFT);
+    height_brush_opacity_edit_line->getEventChanged().connect(height_brush_opacity_edit_line_callback,
+        [this](const Unigine::WidgetPtr &widget)
+    {
+        auto edit_widget = Unigine::checked_ptr_cast<Unigine::WidgetEditLine>(widget);
+        if (edit_widget->isValid())
+        {
+            float value = Unigine::String::atof(edit_widget->getText());
+
+            if (m_brush_opacity_cb)
+                m_brush_opacity_cb(value);
+        }
+    }
+    );
+
+    hbox = Unigine::WidgetHBox::create(5);
+    paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    label = Unigine::WidgetLabel::create(translation_gui->translate("Height (m)"));
+    label->setWidth(100);
+    hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    height_brush_height_edit_line = Unigine::WidgetEditLine::create();
+    height_brush_height_edit_line->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    height_brush_height_edit_line->setText(Unigine::String::ftoa(initial_height));
+    hbox->addChild(height_brush_height_edit_line, Unigine::Gui::ALIGN_LEFT);
+    height_brush_height_edit_line->getEventChanged().connect(height_brush_height_edit_line_callback, 
+        [this](const Unigine::WidgetPtr &widget)
+    {
+        auto edit_widget = Unigine::checked_ptr_cast<Unigine::WidgetEditLine>(widget);
+        if (edit_widget->isValid())
+        {
+            float value = Unigine::String::atof(edit_widget->getText());
+
+            if (m_brush_height_cb)
+                m_brush_height_cb(value);
+        }
+    }
+    );
+
+    // not using height scale for now
+    //hbox = Unigine::WidgetHBox::create(5);
+    //paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    //label = Unigine::WidgetLabel::create("Height Scale");
+    //label->setWidth(100);
+    //hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    //auto height_brush_height_scale_edit_line = Unigine::WidgetEditLine::create();
+    //height_brush_height_scale_edit_line->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    //hbox->addChild(height_brush_height_scale_edit_line, Unigine::Gui::ALIGN_LEFT);
+
+
+    hbox = Unigine::WidgetHBox::create(5);
+    paint_tool_container->addChild(hbox, Unigine::Gui::ALIGN_LEFT);
+    label = Unigine::WidgetLabel::create(translation_gui->translate("Blend Mode"));
+    label->setWidth(100);
+    hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    auto height_blend_mode_combo_box = Unigine::WidgetComboBox::create();
+    height_blend_mode_combo_box->addItem(translation_gui->translate("Fixed Height"));
+    height_blend_mode_combo_box->addItem(translation_gui->translate("Additive"));
+    height_blend_mode_combo_box->setCurrentItem(initial_blend_mode);
+    hbox->addChild(height_blend_mode_combo_box);
+    height_blend_mode_combo_box->getEventChanged().connectUnsafe(
+        [this](const Unigine::WidgetPtr &widget)
+    {
+        auto combo_widget = Unigine::checked_ptr_cast<Unigine::WidgetComboBox>(widget);
+        if (combo_widget->isValid())
+        {
+            if (m_height_blend_mode_cb)
+                m_height_blend_mode_cb(combo_widget->getCurrentItem());
+        }
+    }
+    );
+
+
+    main_content_container->addChild(paint_tool_container, Unigine::Gui::ALIGN_EXPAND);
+
+    return main_content_container;
+}
+
+
+Unigine::WidgetPtr terrain_paint_gui::GetWidget()
+{
+    return Unigine::checked_ptr_cast<Unigine::Widget>(m_collapsible_widget->get());
+}
+
+void terrain_paint_gui::Show()
+{
+    m_collapsible_widget->show();
+}
+
+void terrain_paint_gui::Hide()
+{
+    m_collapsible_widget->hide();
+}
+
+void terrain_paint_gui::UpdateUI(std::vector<Unigine::NodePtr> nodes)
+{
+
+}
+
+// eternal update to the ui values. 
+void terrain_paint_gui::set_brush_size(float in_brush_size)
+{
+    // disable our events before updating
+    height_brush_size_edit_line_callback.setEnabled(false);
+    height_brush_size_edit_line->setText(Unigine::String::ftoa(in_brush_size));
+    height_brush_size_edit_line_callback.setEnabled(true);
+}
+
+void terrain_paint_gui::set_brush_angle(float in_brush_angle)
+{
+    // disable our events before updating
+    height_brush_angle_edit_line_callback.setEnabled(false);
+    height_brush_angle_edit_line->setText(Unigine::String::ftoa(in_brush_angle));
+    height_brush_angle_edit_line_callback.setEnabled(true);
+}
+
+void terrain_paint_gui::set_brush_height(float in_brush_height)
+{
+    // disable our events before updating
+    height_brush_height_edit_line_callback.setEnabled(false);
+    height_brush_height_edit_line->setText(Unigine::String::ftoa(in_brush_height));
+    height_brush_height_edit_line_callback.setEnabled(true);
+}
+
+void terrain_paint_gui::set_brush_opacity(float in_brush_opacity)
+{
+    // disable our events before updating
+    height_brush_opacity_edit_line_callback.setEnabled(false);
+    height_brush_opacity_edit_line->setText(Unigine::String::ftoa(in_brush_opacity));
+    height_brush_opacity_edit_line_callback.setEnabled(true);
+}

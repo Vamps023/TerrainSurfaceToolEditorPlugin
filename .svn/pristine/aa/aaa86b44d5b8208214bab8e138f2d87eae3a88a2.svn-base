@@ -1,0 +1,22 @@
+#include "terrain_editor_system_logic.h"
+
+namespace TerrainEditorPlugin
+{
+    // Implement the init() function that will be called
+    // after system script initialization
+    int TerrainEditorSystemLogic::init()
+    {
+        Unigine::Log::message("TerrainEditorSystemLogic::init(): called\n");
+
+        return 1;
+    }
+
+    // Implement the shutdown() function that will be called
+    // after the system script shut down
+    int TerrainEditorSystemLogic::shutdown()
+    {
+        Unigine::Log::message("TerrainEditorSystemLogic::shutdown(): called\n");
+
+        return 1;
+    }
+}

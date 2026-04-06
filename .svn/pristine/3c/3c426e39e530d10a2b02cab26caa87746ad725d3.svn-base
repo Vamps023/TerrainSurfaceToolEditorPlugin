@@ -1,0 +1,26 @@
+/// @file      WorldBuilderSystemLogic.h
+/// @author    Carmine Fantarella
+/// @copyright © SYDAC Pty Ltd, 2023
+#pragma once
+#include <UnigineLogic.h>
+
+namespace TerrainEditorPlugin
+{
+    class TerrainEditorSystemLogic : public Unigine::SystemLogic
+    {
+    public:
+        // Implement the init() function that will be called
+        // after system script initialization
+        int init() override;
+
+        // Implement the shutdown() function that will be called
+        // after the system script shut down
+        int shutdown() override;
+
+    private:
+
+        //m_import_ground_height_gui
+        //m_import_ground_image_gui
+
+    };
+}

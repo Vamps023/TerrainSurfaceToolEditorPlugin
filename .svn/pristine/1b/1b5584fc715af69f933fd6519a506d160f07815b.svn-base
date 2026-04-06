@@ -1,0 +1,568 @@
+/// @file      terrain_to_surface_plugin.cpp
+/// @author    James Rentoulis
+/// @copyright © SYDAC Pty Ltd, 2023
+///
+///
+#define _USE_MATH_DEFINES
+#include "terrain_to_surface.h"
+#include "object_mesh_helper.h"
+#include "terrain_manipulator.h"
+#include "TerrainHelper.h"
+#include "unigine2_graphics/collapsible_widget.h"
+#include "unigine2_graphics/unigine2_utilities.h"
+#ifdef CMAKE_INTDIR
+#include "../include/world_builder_plugin/world_builder_plugin_cmake.h"
+#else
+#include "../include/world_builder_plugin/world_builder_plugin.h"
+#endif
+#include "world_builder_plugin/world_builder_utilities.h"
+#include <cassert>
+#include <math.h>
+#include <random>
+#include <regex>
+#include <sstream>
+#include <UnigineObjects.h>
+#include <UnigineWorld.h>
+
+namespace
+{
+    static int round_up(int value, int round)
+    {
+        int result = ((value + (round - 1)) / round) * round;
+        return result;
+    }
+
+    static int group_threads(int width, int kernel_size)
+    {
+        int result = __max(1, round_up(width, kernel_size) / kernel_size);
+        return result;
+    }
+
+    static Unigine::Math::ivec2 round_up(Unigine::Math::ivec2 value, Unigine::Math::ivec2 round)
+    {
+        Unigine::Math::ivec2 result = ((value + (round - 1)) / round) * round;
+        return result;
+    }
+
+}
+
+terrain_to_surface::terrain_to_surface(terrain_manipulator& terrain_manipulator)
+  : m_terrain_manipulator(terrain_manipulator)
+{
+    // this is not available in the unigine editor, should be getting passed in.
+    Unigine::EngineWindowPtr main_window = Unigine::WindowManager::getMainWindow();
+    auto                     gui         = main_window->getGui();
+
+    // surface property to look for to pull terrain
+    // apparently was not found in the constructor which is possible filesystem timing issues because our data folder is
+    // mounted instead of by default.
+    // m_terrain_target_surface_prop = Unigine::Properties::findProperty("terrain_surface");
+
+    float init_flat_distance      = 30;
+    float init_falloff_distance   = 30;
+    float initial_bias_value      = 0.0f;
+    float initial_smoothing_value = 0.5f;
+    int   init_layer_order        = 0;
+    int   init_pull_target_mode   = 0;
+
+    m_terrain_to_surface_gui = std::make_unique<pull_terrain_to_surface_gui>(gui,
+                                                                             init_flat_distance,
+                                                                             init_falloff_distance,
+                                                                             initial_bias_value,
+                                                                             initial_smoothing_value,
+                                                                             init_layer_order,
+                                                                             init_pull_target_mode);
+
+    m_terrain_to_surface_gui->SetApplyCallback(
+      [this](float flat_size, float falloff_size, float bias, float smoothing, int target_layer_order)
+      {
+          std::vector<Unigine::NodePtr> selection;
+
+          if (m_get_selection_func)
+              selection = m_get_selection_func();
+
+          // this should really just put the request onto a queue to be serviced in the update loop
+          // need to look at when we should get the current selection, seems a bit ugly for it to get the selection
+          // here.
+          RaiseTerrainToSelection(selection, flat_size, falloff_size, bias, smoothing, target_layer_order);
+      });
+
+    m_terrain_to_surface_gui->SetPullTargetModeCallback(
+      [this](int pull_target_mode) { this->m_pull_target_mode = static_cast<PullTargetMode>(pull_target_mode); });
+}
+
+terrain_to_surface::~terrain_to_surface()
+{
+}
+
+void terrain_to_surface::update()
+{
+    // process a queue of pulls to generate the images to be drawn
+
+    // - create image for terrain
+    //     - update image per object <- somewhat costly, could be reduced with depth buffer render?
+    //     - smooth terrain  <- costly, hopefully could be replaced
+    // - stitch terrain
+    // request draw
+
+    // old method for stitch terrain was to set edge values in an image as needed and then call the same smooth terrain
+    // function
+}
+
+void terrain_to_surface::RaiseTerrainToSelection(std::vector<Unigine::NodePtr> selected_nodes,
+                                                 float                         flat_distance,
+                                                 float                         falloff_distance,
+                                                 float                         bias,
+                                                 float                         smoothing,
+                                                 int                           target_layer_order)
+{
+    // surface property to look for to pull terrain
+    // apparently was not found when this was done in the constructor which is possible filesystem timing issues because
+    // our data folder is mounted instead of by default. so adding here for now. maybe could still be useful if the
+    // property was selectable by user.
+    Unigine::PropertyPtr terrain_target_surface_prop = Unigine::Properties::findProperty("terrain_surface");
+
+    switch (m_pull_target_mode)
+    {
+    case terrain_to_surface::SurfaceProperty:
+    {
+        if (terrain_target_surface_prop)
+            RaiseTerrainToSurfaces(selected_nodes, terrain_target_surface_prop, flat_distance, falloff_distance, bias, smoothing, target_layer_order);
+        break;
+    }
+    case terrain_to_surface::BoundingBox:
+    {
+        for (const auto& selected : selected_nodes)
+        {
+            // raise to each selection individually,
+            RaiseTerrainToBoundingBox(selected, flat_distance, falloff_distance, target_layer_order);
+        }
+    }
+    default:
+        break;
+    }
+}
+
+void terrain_to_surface::RaiseTerrainToSurfaces(std::vector<Unigine::NodePtr> nodes,
+                                                Unigine::PropertyPtr          target_surface_property,
+                                                float                         flat_distance,
+                                                float                         falloff_distance,
+                                                float                         bias,
+                                                float                         smoothing,
+                                                int                           target_layer_order)
+{
+    using namespace Unigine;
+    using namespace Unigine::Math;
+
+    const char* compute_material_name = "raise_terrain_to_surfaces_comp.basemat";
+    auto        file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(compute_material_name));
+    if (!file_guid.isValid())
+    {
+        Log::warning("RaiseTerrainToSurfaces: Could not find terrain compute material needed to perform terrain modification: %s\n",
+                     compute_material_name);
+        return;
+    }
+
+    MaterialPtr compute_material = Unigine::Materials::findMaterialByFileGUID(file_guid)->inherit();
+
+    Log::message("RaiseTerrainToSurfaces: Raising terrain to surface with flat distance %g and falloff distance %g.\n",
+                 flat_distance,
+                 falloff_distance);
+
+    // Retrieve our terrain tiles
+
+    Unigine::Vector<LandscapeLayerMapPtr> terrain_tiles;
+    FindTerrainTiles(Landscape::getActiveTerrain(), terrain_tiles);
+
+    if (terrain_tiles.empty())
+    {
+        Log::message("RaiseTerrainToSurfaces: No terrain tiles to be fitted");
+        return;
+    }
+
+    std::vector<Unigine::ObjectPtr> flattened_list  = flattenToObjectList(nodes);
+    std::vector<ObjectSurface>      candidate_pairs = filterMatchingObjects(flattened_list, target_surface_property);
+
+    if (candidate_pairs.empty())
+    {
+        Log::message("RaiseTerrainToSurfaces: No targets to be fitted against");
+        return;
+    }
+
+    for (LandscapeLayerMapPtr terrain_tile : terrain_tiles)
+    {
+        // Get the objects that lie within the current ObjectTerrain
+        float radius = flat_distance + falloff_distance;
+        std::vector<ObjectSurface> objects_for_tile = getObjectsWithinBoundingBox(terrain_tile->getWorldBoundBox(), candidate_pairs, radius);
+
+        if (objects_for_tile.size() == 0)
+        {
+            const char* terrail_tile_name = terrain_tile->getName();
+            Log::message("RaiseTerrainToSurfaces: Terrain tile '%s' intersects no objects. Skipping.\n", terrail_tile_name);
+            continue;
+        }
+
+        auto  terrain_guid    = terrain_tile->getGUID();
+        ivec2 pixel_coord     = {};
+        ivec2 tile_resolution = terrain_tile->getResolution();
+        if (tile_resolution.x == 0 || tile_resolution.y == 0)
+        {
+            Log::message("RaiseTerrainToSurfaces: Bad tile resolution %i %i\n", tile_resolution.x, tile_resolution.y);
+            continue;
+        }
+
+        // Tile subdivision, for lowerign the workload of every compute operation
+        ivec2 max_subtile_resolution = ivec2(1024);
+        ivec2 tile_subtiles = round_up(tile_resolution, ivec2(max_subtile_resolution)) / max_subtile_resolution;
+
+        for (int subtile_y = 0; subtile_y < tile_subtiles.y; subtile_y++)
+        {
+            for (int subtile_x = 0; subtile_x < tile_subtiles.x; subtile_x++)
+            {
+                ivec2 subtile_pixel_coord = ivec2(subtile_x, subtile_y) * max_subtile_resolution;
+                ivec2 subtile_resolution  = min(tile_resolution - subtile_pixel_coord, max_subtile_resolution);
+
+                dvec2 tile_coord_to_position = terrain_tile->getTexelSize(); // #NOTE: (1.0 / tile_resolution) *
+                                                                             // tile_size
+
+                BoundBox      tile_bb              = terrain_tile->getBoundBox();
+                WorldBoundBox tile_wbb             = terrain_tile->getWorldBoundBox();
+                dmat4         tile_world_transform = terrain_tile->getWorldTransform();
+
+                vec3     subtile_minimum(vec2(subtile_pixel_coord) * vec2(tile_coord_to_position), tile_bb.minimum.z);
+                vec3     subtile_maximum(vec2(subtile_pixel_coord + subtile_resolution) * vec2(tile_coord_to_position),
+                                     tile_bb.maximum.z);
+                BoundBox subtile_bb(subtile_minimum, subtile_maximum);
+                WorldBoundBox subtile_wbb = WorldBoundBox(subtile_bb, tile_world_transform);
+
+                std::vector<ObjectSurface> objects_for_subtile = getObjectsWithinBoundingBox(subtile_wbb, objects_for_tile, radius);
+
+                if (objects_for_subtile.empty())
+                {
+                    continue;
+                }
+
+                // Signal to the terrain manipulator that we start asynchronous operations
+                int operation_id = Landscape::generateOperationID();
+                m_async_operations_count++;
+                m_terrain_manipulator.SetBlockOperationCount(m_async_operations_count);
+
+                // Note: All the callbacks attached to EventTextureDraw will be executed sequentially on a specific thread separated from the main thread
+                EventConnections* connections = new EventConnections();
+                Landscape::getEventTextureDraw().connect(
+                  *connections,
+                  [this,
+                   subtile_x,
+                   subtile_y,
+                   subtile_pixel_coord,
+                   subtile_resolution,
+                   compute_material,
+                   connections,
+                   terrain_guid,
+                   operation_id,
+                   terrain_tile,
+                   tile_resolution,
+                   objects_for_tile,
+                   flat_distance,
+                   falloff_distance,
+                   bias,
+                   smoothing](const UGUID& invoke_guid, int invoke_id, const LandscapeTexturesPtr& buffer, const ivec2& coord, int data_mask)
+                  {
+                      // Filter out any other callback source than our specific call
+                      if (invoke_guid != terrain_guid || invoke_id != operation_id)
+                      {
+                          return;
+                      }
+
+#ifdef DEBUG
+                      Log::message("RaiseTerrainToSurfaces: '%s' executing subtile sub:[%i, %i]\n", terrain_tile->getName(), subtile_x, subtile_y);
+#endif
+                      // Create an output texture to receive height calculation, the size of our "subtile"
+                      TexturePtr output_texture_gpu = Texture::create();
+                      assert(output_texture_gpu.isValid());
+                      output_texture_gpu->create2D(subtile_resolution.x,
+                                                   subtile_resolution.y,
+                                                   Texture::FORMAT_R32F,
+                                                   Texture::FORMAT_USAGE_RENDER | Texture::FORMAT_USAGE_UNORDERED_ACCESS);
+                      assert(output_texture_gpu->isValid());
+
+                      TexturePtr src_height_texture = buffer->getHeight();
+                      assert(src_height_texture.isValid());
+                      assert(src_height_texture->isValid());
+
+                      // Retrieve all vertices of our surfaces and prepare the buffer to hold them
+
+                      std::vector<dvec3> vertices_world_space;
+                      for (auto object_surface : objects_for_tile)
+                      {
+                          appendBaseVerts(object_surface, vertices_world_space); // appends to vertices_world_space
+                      }
+
+                      // Sanity checks
+                      size_t z_vertex_count = vertices_world_space.size();
+                      assert(z_vertex_count < INT_MAX);
+                      assert((z_vertex_count % 3) == 0);
+
+                      StructuredBufferPtr vertices_world_space_buffer_gpu = StructuredBuffer::create();
+                      assert(vertices_world_space_buffer_gpu.isValid());
+                      vertices_world_space_buffer_gpu->create(StructuredBuffer::USAGE_GPU_RESOURCE | StructuredBuffer::USAGE_IMMUTABLE,
+                                                              vertices_world_space.data(),
+                                                              sizeof(dvec3),
+                                                              z_vertex_count);
+                      assert(vertices_world_space_buffer_gpu->isValid());
+
+                      // Declare our GPU buffers, which should match those declared in the material
+
+                      struct ConfigBuffer
+                      {
+                          dmat4x4_values tile_world_transform;
+                          int            triangle_count;
+                          int            vertex_count;
+                          ivec2          subtile_pixel_coord;
+                          ivec2          subtile_resolution;
+                          float          flat_distance;
+                          float          falloff_distance;
+                          float          bias;
+                          float          rational;
+                          vec2           tile_coord_to_position;
+                      };
+
+                      ConfigBuffer config = {};
+
+                      config.flat_distance    = flat_distance;
+                      config.falloff_distance = falloff_distance;
+                      config.bias             = bias;
+                      config.rational         = 0.0f;
+                      if (smoothing > 0.0f)
+                      {
+                          config.rational = 1.0 / clamp(1.0f - smoothing, 0.01f, 0.99f);
+                      }
+
+                      int vertex_count      = static_cast<int>(z_vertex_count);
+                      int triangle_count    = vertex_count / 3;
+                      config.triangle_count = triangle_count;
+                      config.vertex_count   = vertex_count;
+
+                      config.subtile_pixel_coord    = subtile_pixel_coord;
+                      config.subtile_resolution     = subtile_resolution;
+                      config.tile_coord_to_position = vec2(terrain_tile->getTexelSize());
+
+#ifdef DEBUG
+                      Log::message("subtile_pixel_coord %i, %i\n", subtile_pixel_coord.x, subtile_pixel_coord.y);
+                      Log::message("tile_coord_to_position %f, %f\n",
+                                   config.tile_coord_to_position.x,
+                                   config.tile_coord_to_position.y);
+                      Log::message("subtile_resolution %i, %i\n", subtile_resolution.x, subtile_resolution.y);
+#endif
+
+                      // Retrieve our tile's 3D transformation
+                      dmat4 tile_world_transform = terrain_tile->getWorldTransform();
+                      tile_world_transform.get(config.tile_world_transform, true);
+
+                      // And now create our buffer !
+
+                      StructuredBufferPtr config_buffer_gpu = StructuredBuffer::create();
+                      assert(config_buffer_gpu.isValid());
+                      config_buffer_gpu->create(StructuredBuffer::USAGE_GPU_RESOURCE | StructuredBuffer::USAGE_IMMUTABLE,
+                                                &config,
+                                                sizeof(ConfigBuffer),
+                                                1);
+                      assert(config_buffer_gpu->isValid());
+
+                      // Bind source texture to unit, to be read at index 0
+                      RenderState::setTexture(RenderState::BIND_ALL, 0, src_height_texture);
+
+                      RenderTargetPtr render_target = RenderTarget::create();
+                      assert(render_target.isValid());
+
+                      // bindings
+                      render_target->bindStructuredBuffer(0, config_buffer_gpu);
+                      render_target->bindUnorderedAccessTexture(1, output_texture_gpu, true);
+                      render_target->bindStructuredBuffer(2, vertices_world_space_buffer_gpu);
+
+                      render_target->enableCompute();
+
+                      // The workload will be split in number of pixels / 32, on both X/Z axes. We assume our compute shader
+                      // is making 32x32 threads internally. For each of these group, we need a config buffer describing the indices
+                      // and offset to specify which part of the textures it must target
+
+#define NUM_GROUP_X 32
+#define NUM_GROUP_Y 32
+                      int group_threads_x = group_threads(subtile_resolution.x, NUM_GROUP_X);
+                      int group_threads_y = group_threads(subtile_resolution.y, NUM_GROUP_Y);
+
+                      // Split up the compute workload into smaller chunks to avoid Timeout Detection and Recovery crash
+                      constexpr int thread_group_block = 16; // 16x16 group size for a 512x512 effective resolution
+                      for (int thread_offset_y = 0; thread_offset_y < group_threads_y; thread_offset_y += thread_group_block)
+                      {
+                          int threads_lower_y = thread_offset_y;
+                          int threads_upper_y = min(group_threads_y, thread_offset_y + thread_group_block);
+                          int threads_y       = threads_upper_y - threads_lower_y;
+
+                          for (int thread_offset_x = 0; thread_offset_x < group_threads_x; thread_offset_x += thread_group_block)
+                          {
+                              int threads_lower_x = thread_offset_x;
+                              int threads_upper_x = min(group_threads_x, thread_offset_x + thread_group_block);
+                              int threads_x       = threads_upper_x - threads_lower_x;
+#ifdef DEBUG
+                              Log::message("RaiseTerrainToSurfaces: '%s' computing pass sub[%i, %i] grp[%i, %i]\n",
+                                           terrain_tile->getName(),
+                                           subtile_x,
+                                           subtile_y,
+                                           thread_offset_x,
+                                           thread_offset_y);
+#endif
+                              // This buffer describe the group of pixels allocated for this particular call (we actually just really need the
+                              // offset for our thread)
+
+                              struct GroupBuffer
+                              {
+                                  int threads_lower_x;
+                                  int threads_lower_y;
+                              };
+
+                              GroupBuffer group     = {};
+                              group.threads_lower_x = threads_lower_x;
+                              group.threads_lower_y = threads_lower_y;
+
+                              StructuredBufferPtr group_buffer_gpu = StructuredBuffer::create();
+                              assert(group_buffer_gpu.isValid());
+                              group_buffer_gpu->create(StructuredBuffer::USAGE_GPU_RESOURCE | StructuredBuffer::USAGE_IMMUTABLE,
+                                                       &group,
+                                                       sizeof(GroupBuffer),
+                                                       1);
+                              assert(group_buffer_gpu->isValid());
+
+                              render_target->bindStructuredBuffer(3, group_buffer_gpu);
+
+                              // And the render compute for this particular group
+
+                              compute_material->renderCompute(Render::PASS_POST, threads_x, threads_y);
+                              render_target->flush();
+
+                              group_buffer_gpu->destroy();
+                          }
+                      }
+
+                      // Clean up, unbind, destroy whatever resources we created
+
+                      render_target->disable();
+                      render_target->unbindAll();
+
+                      config_buffer_gpu->destroy();
+                      vertices_world_space_buffer_gpu->destroy();
+                      render_target->destroy();
+
+                      // The last step is to actually APPLY what we computed here
+
+                      m_terrain_manipulator.SetTerrainHeightImmediate(terrain_tile, invoke_guid, invoke_id, buffer, coord, data_mask, output_texture_gpu, true);
+#ifdef DEBUG
+                      Log::message("RaiseTerrainToSurfaces:: '%s' completed pass sub[%i %i]\n", terrain_tile->getName(), subtile_x, subtile_y);
+#endif
+                      // Don't forget to remove your lock on terrain manipulation operations
+                      // TODO: We should maybe add some try/catch to avoid anything failing previously. If anything fails, and this lock is not released
+                      // we won't be able to use the terrain manipulator anymore
+
+                      m_async_operations_count--;
+                      m_terrain_manipulator.SetBlockOperationCount(m_async_operations_count);
+
+                      delete connections; // #WARN: Must be at end of lamda, it invalidates capture
+                  });
+                Landscape::asyncTextureDraw(operation_id, terrain_guid, subtile_pixel_coord, subtile_resolution, Landscape::FLAGS_DATA_HEIGHT);
+            }
+        }
+    }
+#undef NUM_GROUP_X
+#undef NUM_GROUP_Y
+}
+
+void terrain_to_surface::RaiseTerrainToBoundingBox(Unigine::NodePtr node, float flat_distance, float falloff_distance, int target_layer_order)
+{
+    Unigine::Log::message("raising terrain to bounding box with flat distance %g and falloff distance %g.\n", flat_distance, falloff_distance);
+
+    auto bound_box      = node->getHierarchyWorldBoundBox();
+    auto bound_box_size = bound_box.getSize();
+
+    auto base_radius = std::max(bound_box_size.x, bound_box_size.y) / 2;
+
+    auto total_radius = base_radius + flat_distance + falloff_distance;
+
+    // as we will need to find the nearest pixel to draw to, and this will be half
+    // of the brush away from the centre, we want to get the closest pixel for the radius
+
+    // we should be rounding to the nearest pixel unit length like the following, but for now
+    // assuming 1 metre per pixel so rounding to the nearest integer metre.
+
+    // Calculating the number of pixels per unit length
+    // auto pixels_per_unit = Vec2{ closest_lmap->getResolution() } / Vec2{ closest_lmap->getSize() };
+
+    //// calculating the coordinates and the size of the region or the landscape layer texture to be modified
+    // drawing_region_coord = ivec2{ pixels_per_unit * brush_local_bbox_min };
+    // drawing_region_size = ivec2{ pixels_per_unit * (brush_local_bbox_max - brush_local_bbox_min) };
+
+    auto drawing_radius = std::ceil(total_radius * 2) / 2;
+    auto padding        = drawing_radius - total_radius;
+
+    auto brush_size = total_radius * 2;
+
+    // falloff ratio is the percent of the radius where we start to fall off.
+    auto falloff_ratio = 1 - (falloff_distance / total_radius);
+    auto padding_ratio = padding / drawing_radius;
+
+    auto brush_material = terrain_manipulator::getCircularTerrainBrushWithFalloff(falloff_ratio, padding_ratio);
+    if (brush_material == nullptr)
+        return;
+
+    m_terrain_manipulator.RaiseTerrainToBoundingBox(node, Unigine::Math::dvec2(brush_size, brush_size), brush_material);
+}
+
+void terrain_to_surface::SetPullTargetMode(terrain_to_surface::PullTargetMode in_pull_target_mode)
+{
+    m_pull_target_mode = in_pull_target_mode;
+    m_terrain_to_surface_gui->SetPullTargetMode(in_pull_target_mode);
+}
+
+void terrain_to_surface::FindTerrainTiles(Unigine::NodePtr                                node,
+                                          Unigine::Vector<Unigine::LandscapeLayerMapPtr>& lmap_nodes,
+                                          const char*                                     target_lmap_name)
+{
+    using namespace Unigine;
+
+    if (node.isValid())
+    {
+        int num_children = node->getNumChildren();
+        for (int child_index = 0; child_index < num_children; child_index++)
+        {
+            NodePtr child = node->getChild(child_index);
+            if (child.isValid())
+            {
+                if (child->isLandscapeLayer())
+                {
+                    LandscapeLayerMapPtr lmap = dynamic_ptr_cast<LandscapeLayerMap>(child);
+                    if (lmap.isValid())
+                    {
+                        int         lmap_order                    = lmap->getOrder();
+                        int         terrain_surface_fitting_index = lmap->findProperty("terrain_surface_fitting");
+                        const char* lmap_name                     = lmap->getName();
+
+                        if (terrain_surface_fitting_index != -1 // surface is equipped with a property specifying the
+                                                                // configuration for the futtubg
+                            || strcmp(lmap_name, target_lmap_name) == 0 // the layer name is the same as the one given
+                            || strlen(target_lmap_name) == 0)           // no specific target was given
+                        {
+                            lmap_nodes.push_back(lmap);
+                        }
+                        else
+                        {
+                            Log::message("Ignoring layer map %s at order %i\n", lmap_name, lmap_order);
+                        }
+                    }
+                }
+                else
+                {
+                    FindTerrainTiles(child, lmap_nodes, target_lmap_name);
+                }
+            }
+        }
+    }
+}

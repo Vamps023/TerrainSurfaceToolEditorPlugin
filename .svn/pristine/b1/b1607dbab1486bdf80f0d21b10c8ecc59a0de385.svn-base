@@ -1,0 +1,27 @@
+#pragma once
+
+#include <UnigineObjects.h>
+#include <UniginePlugin.h>
+
+class CollapsibleWidget;
+
+class import_ground_image_gui
+{
+public:
+    import_ground_image_gui();
+
+    Unigine::WidgetPtr GetWidget();
+
+    void Show();
+    void Hide();
+
+    void UpdateUI(std::vector<Unigine::NodePtr> nodes);
+    void SetImportCallback(std::function<void(std::string)> cb) { m_import_cb  = cb; }
+
+private:
+    std::shared_ptr<CollapsibleWidget> m_collapsible_widget;
+
+    std::function<void(std::string)> m_import_cb;
+
+};
+

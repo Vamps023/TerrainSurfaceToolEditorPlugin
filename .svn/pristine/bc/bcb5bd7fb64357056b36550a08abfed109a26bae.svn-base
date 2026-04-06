@@ -1,0 +1,330 @@
+#include "terrain_creator.h"
+#include "TerrainHelper.h"
+#include "GeometryHelper.h"
+
+
+using namespace Unigine;
+using namespace Math;
+
+namespace
+{
+
+    static const std::string TERRAIN_NAME_PREFIX = "terrain";
+    // TODO: These should be configurbale in some way, probably from the ini file to start with
+    static const auto TERRAIN_ALBEDO_IMAGE_NAME = "shared_terrain_albedo.dds";
+    static const auto TERRAIN_HEIGHT_IMAGE_NAME = "shared_terrain_height.tif";
+    
+    static const double PADDING_DISTANCE = 1000;
+}
+
+void terrain_creator::InitiateTerrainCreation()
+{
+    // clear our queue
+    m_terrain_creation_request.clear();
+
+    // reset our progression tracking
+    m_terrain_creation_progress.tiles_to_create = 0;
+    m_terrain_creation_progress.tiles_remaining = 0;
+    m_terrain_creation_progress.current_tile_progress = 0;
+}
+
+void terrain_creator::RequestTerrainCreation(std::string file_path_to_lmap, Unigine::Math::ivec2 request_coordinate, Unigine::Math::dvec3 request_position, Unigine::Math::ivec2 size, Unigine::Math::ivec2 resolution, double base_height)
+{
+    // check if we already have a pending request for this tile.
+    // items can be popped off from the update function though, not sure this is threadsafe?
+    // CHECK: can we get to this function from outside the main update loop? i think ok if it is an internal broadcast message CB but not if its from external TCP
+    // maybe we should block creating in the update (preventing pops) until we have all requests queued?
+    auto request_exists_it = std::find_if(m_terrain_creation_request.begin(), m_terrain_creation_request.end(), [request_position](const auto request_it) {return request_it.position == request_position; });
+    if (request_exists_it == m_terrain_creation_request.end())
+    {
+        auto name = TERRAIN_NAME_PREFIX + "_x" + std::to_string(request_coordinate.x) + "_y" + std::to_string(request_coordinate.y);
+        auto new_lmap_path = file_path_to_lmap + name + ".lmap";
+
+        // Create our data buffer
+        terrain_creator::TerrainCreationData creation_data;
+        creation_data.height_scale = 1;
+        creation_data.position = request_position; // but the lmaps do not support node position z values, they will always be 0.
+        creation_data.resolution = resolution;
+        creation_data.size = size;
+        creation_data.lmap_name = name;
+        creation_data.lmap_path = new_lmap_path;
+        creation_data.base_height = static_cast<float>(base_height); // the height needs to go into the base height data so we can adjust the heights image data.
+
+        m_terrain_creation_request.push_back(creation_data);
+
+        m_terrain_creation_progress.tiles_to_create += 1;
+        m_terrain_creation_progress.tiles_remaining += 1;
+
+    }
+}
+
+
+
+ void terrain_creator::CreateTerrainForPosition(TerrainCreationData creation_data)
+{
+
+    ObjectLandscapeTerrainPtr terrain = Landscape::getActiveTerrain();
+    if (terrain == nullptr)
+        return;
+
+    // create a new lmap for our terrain object
+    auto creator       = Unigine::LandscapeMapFileCreator::create();
+
+
+    m_terrain_creation_data_buffer.push(creation_data);
+
+    // Grid can be used if you want to load image data from a tile based source
+    // for example, if you have multiple tiled satellite images you want to load in for the single
+    // layer map you are creating here.
+    // We are just using one source image assigned to each tile and have only one height data
+    // so we just want a grid of 1x1
+    creator->setGrid(Unigine::Math::ivec2(1,1));
+    // the creator resolution is the final resolution of the full lmap, so if you have multiple grid tiles
+    // you are importing, it will be the resolution of each tile multiplied by the grid size
+    creator->setResolution(creation_data.resolution);
+    creator->setPath(creation_data.lmap_path.c_str());
+
+
+    //creator->getEventCreate().connect(connections, this, &terrain_creator::OnLmapCreatorCreate);
+    creator->getEventBegin().connectUnsafe(this, &terrain_creator::OnLmapCreatorBegin);
+    creator->getEventCreate().connectUnsafe(this, &terrain_creator::OnLmapCreatorCreate);
+    creator->getEventProgress().connectUnsafe(this, &terrain_creator::OnLmapCreatorProgress);
+    creator->getEventEnd().connectUnsafe(this, &terrain_creator::OnLmapCreatorEnd);
+
+    m_terrain_creation_progress.current_tile_progress = 0;
+
+    // this seems to be a long blocking call
+    creator->run();
+}
+
+void terrain_creator::OnLmapCreatorCreate(const Unigine::LandscapeMapFileCreatorPtr &creator, const Unigine::LandscapeImagesPtr &images, int x, int y)
+{
+
+    // we will imagine that once we have started that is 1%
+    //m_terrain_creation_progress.current_tile_progress = 1;
+    m_terrain_creation_progress.current_tile_progress = creator->getProgress();
+
+    auto terrain_data = m_terrain_creation_data_buffer.front();
+    Unigine::Log::message("Lmap creation %s, coord %f, %f subgrid %d, %d.\n", terrain_data.lmap_name.c_str(), terrain_data.position.x, terrain_data.position.y, x, y);
+
+    Unigine::ImagePtr height_source = Unigine::Image::create();
+    auto height_source_path = Unigine::FileSystem::resolvePartialVirtualPath(TERRAIN_HEIGHT_IMAGE_NAME);
+    bool use_source_height = Unigine::FileSystem::isFileExist(height_source_path);
+    if (use_source_height)
+    {
+        height_source->load(height_source_path);
+
+        if (height_source)
+        {
+            if (height_source->getFormat() != Unigine::Image::FORMAT_R32F)
+                use_source_height &= height_source->convertToFormat(Unigine::Image::FORMAT_R32F) > 0;
+
+            // Not sure if this is supposed to take into account Render::IsFlipped() (some forum posts include a check)
+            // but at least for normal use case, the 0,0 pixel is the top left corner where 0,0 of the terrain is bottom left so we must flip.
+            height_source->flipY();
+
+            // we normalise the input source and reset the range based on the input min/max
+            // TODO: these should come from user input or configuration.
+            auto min_height = 0.0;
+            auto max_height = 100.0;
+
+            height_source->normalizeRange(true);
+            height_source->changeRange(Unigine::Math::dvec4(0, 1, min_height, max_height));
+
+            if (height_source->getWidth() != terrain_data.resolution.x || height_source->getHeight() != terrain_data.resolution.y)
+            {
+                Unigine::Log::warning("The height image resolution (%d %d) does not match the resolution of tile (%d %d), attempting resize.\n", height_source->getWidth(), height_source->getHeight(), terrain_data.resolution.x, terrain_data.resolution.y);
+                auto resize_success = height_source->resize(terrain_data.resolution.x, terrain_data.resolution.y);
+                if (!resize_success)
+                {
+                    Unigine::Log::warning("Attempt to resize failed, using empty height data set, please supply an uncompressed 2D image to support resize.\n");
+                    use_source_height = false;
+                }
+            }
+        }
+    }
+
+    Unigine::ImagePtr base_height = Unigine::Image::create();
+    base_height->create2D(terrain_data.resolution.x, terrain_data.resolution.y, Image::FORMAT_R32F, 1);
+    base_height->setChannelFloat(0, terrain_data.base_height);
+
+    ImagePtr desitination_height = images->getHeight();
+
+    if(use_source_height)
+    {
+        Unigine::ImagePtr combined_height = Unigine::Image::create(height_source);
+
+        combined_height->blend(base_height, 0, 0, 0, 0, combined_height->getWidth(), combined_height->getHeight());
+        
+        desitination_height->create2D(combined_height->getWidth(), combined_height->getHeight(), combined_height->getFormat(), combined_height->getNumMipmaps());
+        desitination_height->copy(combined_height, 0, 0, 0, 0, combined_height->getWidth(), combined_height->getHeight());
+    }
+    else
+    {
+        Unigine::Log::error("The height image (%s) cannot be loaded, flat terrain will be created.\n", TERRAIN_HEIGHT_IMAGE_NAME);
+
+        desitination_height->create2D(base_height->getWidth(), base_height->getHeight(), base_height->getFormat(), base_height->getNumMipmaps());
+        desitination_height->copy(base_height, 0, 0, 0, 0, base_height->getWidth(), base_height->getHeight());
+    }
+
+    // set albedo for current tile
+    auto albedo_source_path = FileSystem::resolvePartialVirtualPath(TERRAIN_ALBEDO_IMAGE_NAME);
+    if (FileSystem::isFileExist(albedo_source_path))
+    {
+        ImagePtr albedo_source = Image::create(albedo_source_path);
+
+        // Not sure if this is supposed to take into account Render::IsFlipped() (some forum posts include a check)
+        // but at least for normal use case, the 0,0 pixel is the top left corner where 0,0 of the terrain is bottom left so we must flip.
+        albedo_source->flipY();
+
+        // this should really be checking the terrain tile (sub-grid) resolution, as that is the callback we are in
+        // currently assuming the grid is 1x1
+        if (albedo_source && (albedo_source->getWidth() == terrain_data.resolution.x) && (albedo_source->getHeight() == terrain_data.resolution.y))
+        {
+            ImagePtr destination_albedo = images->getAlbedo();
+            destination_albedo->create2D(albedo_source->getWidth(), albedo_source->getHeight(), albedo_source->getFormat(), albedo_source->getNumMipmaps());
+            destination_albedo->copy(albedo_source, 0, 0, 0, 0, albedo_source->getWidth(), albedo_source->getHeight());
+        }
+        else
+        {
+            Unigine::Log::warning("The albedo image cannot be loaded, or its resolution (%d %d) does not match the resolution of tile (%d %d), attempting resize.\n", albedo_source->getWidth(), albedo_source->getHeight(), terrain_data.resolution.x, terrain_data.resolution.y);
+            auto resize_success = albedo_source->resize(terrain_data.resolution.x, terrain_data.resolution.y);
+            if (resize_success)
+            {
+                ImagePtr destination_albedo = images->getAlbedo();
+                destination_albedo->create2D(albedo_source->getWidth(), albedo_source->getHeight(), albedo_source->getFormat(), albedo_source->getNumMipmaps());
+                destination_albedo->copy(albedo_source, 0, 0, 0, 0, albedo_source->getWidth(), albedo_source->getHeight());
+            }
+            else
+                Unigine::Log::warning("Attempt to resize failed, please supply an uncompressed 2D image to support resize.\n");
+        }
+    }
+
+    // should do something with the detail mask assigning some textures from track bed mesh creation
+    // but what about the zone based details/vegetation how do they get edited and reimported without regeneration?
+    // auto masks = images->getMask(0);
+
+}
+
+void terrain_creator::OnLmapCreatorBegin(const LandscapeMapFileCreatorPtr &creator)
+{
+    //Log::message("\LMAP Begin event\n");
+    m_terrain_creation_progress.current_tile_progress = creator->getProgress();
+}
+
+
+void terrain_creator::OnLmapCreatorProgress(const LandscapeMapFileCreatorPtr &creator)
+{
+    //Log::message("\LMAP Progress event\n");
+
+    // this is in 0 to 100%
+    // we get lots of calls to this during creation, but we dont get a chance to use the data
+    // until we actually complete as we block the update cycle where we would render our progress.
+    // maybe we can directly render progress here?
+    m_terrain_creation_progress.current_tile_progress = creator->getProgress();
+    //if (m_progress_callback)
+    //    m_progress_callback(static_cast<int>(NumberOfRemainingOperations()));
+}
+
+void terrain_creator::OnLmapCreatorEnd(const LandscapeMapFileCreatorPtr &creator) 
+{
+
+    // Check our creation buffer, return if no data is available.
+    if (m_terrain_creation_data_buffer.size() < 1)
+    {
+        return;
+    }
+
+    // Get our terrain data and remove from the queue.
+    auto terrain_data = m_terrain_creation_data_buffer.front();
+    m_terrain_creation_data_buffer.pop();
+
+    ObjectLandscapeTerrainPtr terrain = Landscape::getActiveTerrain();
+
+    auto layer_map = LandscapeLayerMap::create();
+    auto path      = creator->getPath();
+
+
+    // Add our new lmap to Unigines virtual file system, if it already existed (maybe we deleted the node, we will reuse the guid)
+    UGUID guid;
+    if (Unigine::FileSystem::isVirtualFile(path))
+    {
+        guid = Unigine::FileSystem::getGUID(path);
+    }
+    else
+    {
+        guid.generate();
+        Unigine::FileSystem::addVirtualFile(path, guid);
+    }
+
+    layer_map->setName(terrain_data.lmap_name.c_str());
+    layer_map->setPath(Unigine::FileSystem::guidToPath(guid).get()); // use the GUID not the file path.
+    layer_map->setSize(Vec2(terrain_data.size.x, terrain_data.size.y));
+    layer_map->setHeightScale(static_cast<float>(terrain_data.height_scale));
+    layer_map->setPosition(terrain_data.position);
+    layer_map->setParent(terrain);
+
+    //layer_map->setOwner(false);
+    layer_map->setShowInEditorEnabledRecursive(true);
+    layer_map->setSaveToWorldEnabledRecursive(true);
+
+    m_terrain_creation_progress.tiles_remaining--;
+    m_terrain_creation_progress.current_tile_progress = 0;
+
+    //if (m_progress_callback)
+    //    m_progress_callback(static_cast<int>(NumberOfRemainingOperations()));
+    Log::message("Lmap creation completed terrain %s, coord %f, %f.\n", terrain_data.lmap_name.c_str(), terrain_data.position.x, terrain_data.position.y);
+
+}
+
+int terrain_creator::NumberOfRemainingOperations()
+{
+    auto ops = m_terrain_creation_progress.tiles_remaining * 100 - static_cast<int>(std::floor(m_terrain_creation_progress.current_tile_progress));
+    ops = std::max(ops, 0);
+
+    return ops;
+}
+
+terrain_creator::terrain_creator()
+{
+    // do we need init/shutdown?, probably could be just in ctor and dtor
+
+}
+
+terrain_creator::~terrain_creator()
+{
+   // clenaup should be here
+
+}
+
+
+int terrain_creator::init()
+{
+    // anything to do here?
+    // we might want to get a reference to somewhere we can post some progress data to for the ui during lmap creation?
+    return 1;
+}
+
+int terrain_creator::update()
+{
+    // trying just one per update
+    if (!m_terrain_creation_request.empty())
+    {
+        CreateTerrainForPosition(m_terrain_creation_request.front());
+        m_terrain_creation_request.pop_front();
+        m_terrain_created = true;
+    }
+    else
+        m_terrain_created = false;
+    return 1;
+}
+
+int terrain_creator::shutdown()
+{
+    // remove all event subscriptions on shutdown
+    //connections.disconnectAll();
+    m_terrain_creation_request.clear();
+    m_terrain_creation_data_buffer = {};
+
+    return 1;
+}

@@ -1,0 +1,82 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|Emscripten">
+      <Configuration>Debug</Configuration>
+      <Platform>Emscripten</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Emscripten">
+      <Configuration>Release</Configuration>
+      <Platform>Emscripten</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+  </PropertyGroup>
+  <Import Project="../../../../msvc_common.props" />
+  <Import Project="../../../../msvc_paths.props" />
+  <Import Project="../../../../msvc_unigine.props" />
+  <PropertyGroup>
+    <!-- Conform to the naming convention used by Unigine plugin DLLs. -->
+    <TargetName>$(ProjectName)$(UnigineSuffix)</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration" />
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{F2706D33-1C42-496C-B7CE-59BD4E0DC753}</ProjectGuid>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\..\common\libraries\unigine2_graphics\unigine2_graphics.vcxproj">
+      <Project>{27f9128a-8732-4b05-bebf-4b5ce000e922}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\mount_plugin\mount_plugin.vcxproj">
+      <Project>{391422b6-28a1-4196-bdfa-6b398d084554}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\unigine2_wiring_plugin\unigine2_wiring_plugin.vcxproj">
+      <Project>{9814c6c6-9f14-4de2-a70a-d5fae2f92bda}</Project>
+    </ProjectReference>
+    <ProjectReference Include="terrain_editor_plugin_lib.vcxproj">
+      <Project>{3AD319EF-3F9F-4AF2-8EC6-1A6317D068D2}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(cotsroot)cpprestsdk/cpprestsdk/include;$(commonlibrariesroot)common/include;$(commonlibrariesroot)unigine2_graphics/include;$(simcoreuniginepluginsroot)world_builder_plugin/include;$(simcorelibrariesroot)world_builder_messages/include;$(simcoreuniginepluginsroot)unigine2_track_mesh_builder_plugin/source;../include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CONSOLE;WIN32;_VARIADIC_MAX=10;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Optimization Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Disabled</Optimization>
+    </ClCompile>
+    <ResourceCompile>
+      <AdditionalIncludeDirectories>
+%(AdditionalIncludeDirectories);
+      </AdditionalIncludeDirectories>
+    </ResourceCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(cotsroot)cpprestsdk/cpprestsdk/lib;$(cotsroot)protobuf/protobuf/lib;$(simcoreuniginepluginsroot)mount_plugin/bin;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>boost_date_time-vc140-mt$(LibType);cpprest$(LibType);cpprest_zlib$(LibType);Crypt32.lib;libcrypto$(LibType);libprotobuf$(LibType);libssl$(LibType);Rpcrt4.lib;Winmm.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <PostBuildEvent>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+      </Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="source\UniginePluginDLL.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

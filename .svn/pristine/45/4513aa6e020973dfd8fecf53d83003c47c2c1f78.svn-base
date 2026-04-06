@@ -1,0 +1,37 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.27130.2027
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "terrain_editor_plugin", "terrain_editor_plugin.vcxproj", "{F2706D33-1C42-496C-B7CE-59BD4E0DC753}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "terrain_editor_plugin_lib", "terrain_editor_plugin_lib.vcxproj", "{3AD319EF-3F9F-4AF2-8EC6-1A6317D068D2}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "terrain_editor_plugin_tests", "terrain_editor_plugin_tests.vcxproj", "{A460F175-198C-4D79-A107-DC245E124722}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F2706D33-1C42-496C-B7CE-59BD4E0DC753}.Debug|x64.ActiveCfg = Debug|x64
+		{F2706D33-1C42-496C-B7CE-59BD4E0DC753}.Debug|x64.Build.0 = Debug|x64
+		{F2706D33-1C42-496C-B7CE-59BD4E0DC753}.Release|x64.ActiveCfg = Release|x64
+		{F2706D33-1C42-496C-B7CE-59BD4E0DC753}.Release|x64.Build.0 = Release|x64
+		{3AD319EF-3F9F-4AF2-8EC6-1A6317D068D2}.Debug|x64.ActiveCfg = Debug|x64
+		{3AD319EF-3F9F-4AF2-8EC6-1A6317D068D2}.Debug|x64.Build.0 = Debug|x64
+		{3AD319EF-3F9F-4AF2-8EC6-1A6317D068D2}.Release|x64.ActiveCfg = Release|x64
+		{3AD319EF-3F9F-4AF2-8EC6-1A6317D068D2}.Release|x64.Build.0 = Release|x64
+		{A460F175-198C-4D79-A107-DC245E124722}.Debug|x64.ActiveCfg = Debug|x64
+		{A460F175-198C-4D79-A107-DC245E124722}.Debug|x64.Build.0 = Debug|x64
+		{A460F175-198C-4D79-A107-DC245E124722}.Release|x64.ActiveCfg = Release|x64
+		{A460F175-198C-4D79-A107-DC245E124722}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {937355B5-9304-4ACA-83C5-11EBB820DFD4}
+	EndGlobalSection
+EndGlobal

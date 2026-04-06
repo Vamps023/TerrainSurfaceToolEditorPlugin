@@ -1,0 +1,499 @@
+/// @file      terrain_to_surface_plugin.cpp
+/// @author    James Rentoulis
+/// @copyright © SYDAC Pty Ltd, 2023
+/// 
+/// 
+#define _USE_MATH_DEFINES
+#include <random>
+#include <sstream>
+#include <math.h>
+#include <regex>
+
+#include "terrain_editor_plugin/terrain_editor_plugin.h"
+#include "terrain_creator.h"
+#include "terrain_manipulator.h"
+
+#include "terrain_editor_system_logic.h"
+#include "terrain_editor_world_logic.h"
+
+#include "terrain_creation_gui.h"
+#include "pull_terrain_to_surface_gui.h"
+#include "import_ground_height_gui.h"
+#include "import_ground_image_gui.h"
+
+#include "unigine2_graphics/unigine2_utilities.h"
+#include "unigine2_graphics/collapsible_widget.h"
+#ifdef CMAKE_INTDIR
+#include "../include/world_builder_plugin/world_builder_plugin_cmake.h"
+#else
+#include "../include/world_builder_plugin/world_builder_plugin.h"
+#endif
+#include "world_builder_plugin/world_builder_utilities.h"
+#include "world_builder_messages/WorldBuilderMessages.h"
+
+#include <UnigineWorld.h>
+#include <UnigineObjects.h>
+
+#include <PluginOrder.h>
+
+#include <cassert>
+
+
+using namespace Unigine;
+
+terrain_editor_plugin::terrain_editor_plugin() {}
+
+int terrain_editor_plugin::init()
+{
+    bool success = true;
+
+    Unigine::Log::message("######################\nterrain_editor_plugin initializing...\n######################\n");
+
+    m_system_logic = std::make_unique<TerrainEditorPlugin::TerrainEditorSystemLogic>();
+    m_world_logic = std::make_unique<TerrainEditorPlugin::TerrainEditorWorldLogic>();
+
+    // i think these need to be defined before we register the plugin with WB as
+    // the gui handler will immediately call in to construct the gui in this plugin
+    // which will attempt to create return the guis of these children
+    m_terrain_creator = std::make_unique<terrain_creator>();
+    m_terrain_manipulator = std::make_unique<terrain_manipulator>();
+
+    m_terrain_creation = std::make_unique<terrain_creation>(*m_terrain_creator);
+    m_terrain_painting = std::make_unique<terrain_painting>(*m_terrain_manipulator);
+    m_terrain_to_surface = std::make_unique<terrain_to_surface>(*m_terrain_manipulator);
+
+    m_terrain_creator->init();
+
+    // Set the custom handlers on the Unigine engine
+    Unigine::Engine* engine = Unigine::Engine::get();
+    engine->addSystemLogic(m_system_logic.get());
+    engine->addWorldLogic(m_world_logic.get());
+
+    world_builder_plugin* world_builder = unigine2_plugin::GetUniginePlugin<world_builder_plugin>("world_builder_plugin");
+
+    if (world_builder != nullptr)
+    {
+        m_world_builder_plugin = world_builder;
+
+        auto initialize_handler = [&, this](world_builder_plugin* wb_plugin)
+        {
+            m_world_builder_plugin = wb_plugin;
+
+            m_world_builder_plugin->AddNodeSelectedCallback([this](std::vector<Unigine::NodePtr> selection, bool /* to be removed */)
+            {
+                // Update ui based on selection
+                UpdateUI(selection);
+                return;
+            });
+
+            SetNotificationCallback([&, this](std::string notification_msg)
+            {
+                m_world_builder_plugin->SendNonModalMessageToUnigineToolbar(notification_msg);
+            });
+
+            SetProgressCallback([&, this](int progress_remaining)
+            {
+                if (m_max_operations < progress_remaining)
+                    m_max_operations = progress_remaining;
+
+                if (progress_remaining == 0)
+                    m_max_operations = 0;
+
+                std::string progress_msg = std::string("Remaining operations: " + std::to_string(progress_remaining));
+                m_world_builder_plugin->SetProgressMessage(progress_msg.c_str());
+                m_world_builder_plugin->ShowProgressBar(progress_remaining, m_max_operations);
+                m_world_builder_plugin->ChangeState(WorldBuilder::StateValues::Active);
+            });
+
+            SetFailureCallback([&, this](std::string error_msg)
+            {
+                m_world_builder_plugin->SendErrorMessage(error_msg, true);
+            });
+
+            SetCompletionCallback([&, this](std::string completion_msg)
+            {
+                m_world_builder_plugin->SendNonModalMessageToUnigineToolbar(completion_msg);
+                m_world_builder_plugin->ShowDialog("Terrain To Object", completion_msg);
+            });
+        };
+
+        auto gui_handler = [&, this](world_builder_plugin* wb_plugin)
+        {
+            m_world_builder_plugin = wb_plugin;
+
+            return GetGUI();
+        };
+
+        auto msg_handler = [&, this](const WorldBuilder::MessagePayload* msg, const int INTERNAL_MSG_ID)
+        {
+            if (msg != nullptr)
+            {
+                switch (msg->GetMsgTypeId())
+                {
+                case(WorldBuilder::MessageID::Notification):
+                {
+                    // When we recieve a notification that TrackMeshBuild was successful.
+                    // We create terrain nodes to match the bounds of the terrain.
+                    auto notification = WBMessageUtilities::ConvertMessage<WorldBuilder::NotificationMessage>(msg);
+
+                    // If our notification type isn't WorldRegenerated, ignore it
+                    if (notification->info != WorldBuilder::InfoValues::WorldRegenerated)
+                    {
+                        break;
+                    }
+                    // we may want to just reset all our terrain here, or we may want a specific button to remove them all
+                    // we shouldn't be creating duplicates over the existing tiles on a regenerate, but if our segments (or the origin) move
+                    // we could be left with stale terrain we dont care about.
+                    // either enforce it to be rebuilt or let the user manage it?
+                    //RemoveAllTerrainNodes();
+
+                    // now only doing this on demand from gui button on Terrain Object
+                    //ExpandTerrainToFitTrackSegments();
+                    break;
+                }
+                // BuildTrackMesh is a trigger for when the track XML is updated.
+                case WorldBuilder::MessageID::RegenerateWorld:
+                {
+                    auto regenerate_world_msg = WBMessageUtilities::ConvertMessage<WorldBuilder::RegenerateWorldMessage>(msg);
+
+                    if (m_world_builder_plugin->GetCurrentProjectID() != regenerate_world_msg->id)
+                        break;
+
+                    m_track_network = regenerate_world_msg->track_source_data.value();
+                    m_world_types = regenerate_world_msg->world_object_type_source_data.value();
+                    break;
+                }
+                case WorldBuilder::MessageID::LoadWorld:
+                {
+                    auto load_world_msg = WBMessageUtilities::ConvertMessage<WorldBuilder::LoadWorldMessage>(msg);
+
+                    if (m_world_builder_plugin->GetCurrentProjectID() != load_world_msg->id)
+                        break;
+
+                    m_track_network = load_world_msg->track_source_data.value();
+                    m_world_types = load_world_msg->world_object_type_source_data.value();
+
+                    break;
+                }
+                }
+            }
+            else
+            {
+                // INTERNAL MSG ID HANDLER GOES HERE.
+                switch (INTERNAL_MSG_ID)
+                {
+                default:
+                    break;
+                }
+            }
+        };
+
+        m_world_builder_plugin->RegisterPlugin(get_name(), initialize_handler, gui_handler, msg_handler);
+    }
+
+    m_terrain_painting->set_terrain_painting_enabled_cb(
+        [this](bool terrain_paint_mode_enabled)
+    {
+        // broadcasting that we are editing terrain to other plugins so they can disable functionality as needed.
+        // really this is just blocking the selection plugin from letting you select things in the viewport.
+        // this is probably not the nicest way to manage the editing mode.
+        // we probably need a more global Editing Mode managed by the master plugin, and have the other plugins depend on that (or be updated by it).
+        // perhaps the editing mode should be externally controlled by the master plugin as well (using the main toolbar)
+        if (terrain_paint_mode_enabled)
+            m_world_builder_plugin->BroadcastMessageToPlugins(WorldBuilder::INTERNAL_MSG_ID::TERRAIN_PAINTING_MODE_ENABLED);
+        else
+            m_world_builder_plugin->BroadcastMessageToPlugins(WorldBuilder::INTERNAL_MSG_ID::TERRAIN_PAINTING_MODE_DISABLED);
+
+        m_terrain_painting_mode_enabled = terrain_paint_mode_enabled;
+    }
+    );
+
+    return success;
+}
+
+void terrain_editor_plugin::UpdateUI(std::vector<Unigine::NodePtr> &selection)
+{
+    if (selection.size() > 0)
+    {
+        Unigine::Log::message("updating terrain editor ui.\n");
+
+
+        //m_terrain_widget->hide();
+        bool terrain_node = true;
+        bool pull_terrain_asset = true;
+        bool landscape_layer_node = true;
+        bool track_asset = true;
+        bool user_asset = true;
+
+        for (auto selected : selection)
+        {
+            // this seems to include the _segments node, which is probabbly not what we want
+            pull_terrain_asset &= (Nodes::GetWorldBuilderNodeType(selected) == Nodes::WBNodeType::TRACK
+                || Nodes::IsAUserAsset(selected));
+
+            landscape_layer_node &= Nodes::IsALandscapeObject(selected);
+
+            // should only be one terrain object but lets do this way for consistency
+            terrain_node &= Nodes::IsATerrainObject(selected);
+
+            // for pull terrain to track choice of using surface or not
+            track_asset &= Nodes::IsATrackObject(selected);
+            user_asset &= Nodes::IsAUserAsset(selected);
+
+        }
+        if (pull_terrain_asset)
+        {
+            m_terrain_to_surface->show_ui();
+        }
+        else
+            m_terrain_to_surface->hide_ui();
+
+        if (landscape_layer_node)
+        {
+            m_import_ground_height_gui->Show();
+            m_import_ground_height_gui->UpdateUI(selection);
+            m_import_ground_image_gui->Show();
+            m_import_ground_image_gui->UpdateUI(selection);
+        }
+        else
+        {
+            m_import_ground_height_gui->Hide();
+            m_import_ground_image_gui->Hide();
+        }
+
+        if (terrain_node)
+        {
+            m_terrain_creation_gui->Show();
+            m_terrain_painting->show_ui();
+        }
+        else
+        {
+            m_terrain_creation_gui->Hide();
+            m_terrain_painting->hide_ui();
+        }
+
+        if (pull_terrain_asset && track_asset)
+            m_terrain_to_surface->SetPullTargetMode(terrain_to_surface::PullTargetMode::SurfaceProperty);
+        else if (pull_terrain_asset && user_asset)
+            m_terrain_to_surface->SetPullTargetMode(terrain_to_surface::PullTargetMode::BoundingBox);
+
+    }
+    else
+    {
+        m_terrain_creation_gui->Hide();
+        m_terrain_painting->hide_ui();
+        m_terrain_to_surface->hide_ui();
+        m_import_ground_height_gui->Hide();
+        m_import_ground_image_gui->Hide();
+    }
+    return;
+}
+
+
+int terrain_editor_plugin::shutdown()
+{
+    m_terrain_creator->shutdown();
+
+    // these should probably be owned by the manager classes that use them
+    m_import_ground_height_gui.reset();
+    m_import_ground_image_gui.reset();
+
+    m_terrain_creation.reset();
+    m_terrain_to_surface.reset();
+    m_terrain_painting.reset();
+
+    m_terrain_creator.reset();
+    m_terrain_manipulator.reset();
+
+    // Remove the custom handlers from the Unigine engine
+    Unigine::Engine* engine = Unigine::Engine::get();
+    engine->removeSystemLogic(m_system_logic.get());
+    engine->removeWorldLogic(m_world_logic.get());
+
+    // Note the reverse order of initialisation, due to dependencies.
+    m_world_logic.reset();
+    m_system_logic.reset();
+
+    return 1;
+}
+
+void terrain_editor_plugin::update()
+{
+    if (m_terrain_painting_mode_enabled != m_terrain_painting->is_terrain_painting_enabled())
+    {
+        //m_world_builder_plugin->BroadcastMessageToPlugins(WorldBuilder::INTERNAL_MSG_ID::TERRAIN_PAINTING_MODE_ENABLED);
+
+        m_terrain_painting_mode_enabled = m_terrain_painting->is_terrain_painting_enabled();
+    }
+
+
+    auto remaining_operations = 0;
+    remaining_operations += m_terrain_manipulator->NumberOfRemainingOperations();
+
+    // unfortunately even though we get progress callbacks during the creation,
+    // the creation is blocking the main loop so we don't get back here to call the
+    // world builder callback that will render it until each tile is created.
+    m_terrain_creator->update();
+
+    // any terrain painting
+    m_terrain_painting->update();
+
+    auto remaining_creation_operations = m_terrain_creator->NumberOfRemainingOperations();
+    remaining_operations += remaining_creation_operations;
+
+    // trying just one per update
+    if (m_terrain_creator->WasTerrainCreated())
+    {
+        m_world_builder_plugin->BroadcastMessageToPlugins(WorldBuilder::INTERNAL_MSG_ID::NODE_ADDED);
+    }
+
+    if (m_last_frame_operations == remaining_operations)
+    {
+        return;
+    }
+
+    if (m_progress_callback)
+        m_progress_callback(static_cast<int>(remaining_operations));
+
+    if (!m_terrain_painting_mode_enabled)
+    {
+        if (m_completion_callback && remaining_operations == 0)
+            m_completion_callback("Terrain Editing Processing has finished!");
+    }
+
+    m_last_frame_operations = remaining_operations;
+}
+
+const char * terrain_editor_plugin::get_name()
+{
+    return "terrain_editor_plugin";
+}
+
+int terrain_editor_plugin::get_order()
+{
+	return static_cast<int>(PluginOrder::Default);
+}
+
+
+
+void terrain_editor_plugin::ExpandTerrainToFitTrackSegments()
+{
+    m_terrain_creator->InitiateTerrainCreation();
+    auto segment_node = Unigine::World::getNodeByName(Nodes::segments_parent.c_str());
+    auto lmap_path = std::string(OS::ToString(m_world_builder_plugin->GetCurrentProjectID()) + "/data/layer_maps/");
+
+    std::vector<Unigine::NodePtr> expansion_nodes;
+
+    for (int i = 0; i < segment_node->getNumChildren(); i++)
+    {
+        expansion_nodes.push_back(segment_node->getChild(i));
+    }
+    if (expansion_nodes.size() > 0)
+        m_terrain_creation->ExpandTerrainToFitBoundsOfNodes(expansion_nodes, lmap_path);
+}
+
+
+Unigine::WidgetPtr terrain_editor_plugin::GetGUI()
+{
+    if (m_terrain_group_gui)
+    {
+        return Unigine::checked_ptr_cast<Unigine::Widget>(m_terrain_group_gui);
+    }
+
+    return CreateGUI();
+}
+
+Unigine::WidgetPtr terrain_editor_plugin::CreateGUI()
+{
+
+    m_terrain_group_gui = Unigine::WidgetVBox::create(0, 2);
+
+    m_terrain_creation_gui = std::make_shared<terrain_creation_gui>();
+    m_terrain_creation_gui->SetExecuteCallback([this]()
+    {
+        ExpandTerrainToFitTrackSegments();
+    });
+
+    m_import_ground_height_gui = std::make_shared<import_ground_height_gui>();
+    m_import_ground_height_gui->SetImportCallback([this](std::string image_path, bool apply_scaling, float min_height, float max_height)
+    {
+        Unigine::ImagePtr height_image = Unigine::Image::create();
+        auto height_source_path = Unigine::FileSystem::resolvePartialVirtualPath(image_path.c_str());
+        bool use_source_height = Unigine::FileSystem::isFileExist(height_source_path);
+        if (use_source_height)
+            height_image->load(height_source_path);
+        //Unigine::ImagePtr height_image = Unigine::Image::create(Unigine::FileSystem::resolvePartialVirtualPath(image_path.c_str()));
+        if (!height_image.isValid())
+        {
+            Unigine::Log::warning("Could not create valid image from source: %s\n", image_path.c_str());
+            return;
+        }
+
+        m_terrain_manipulator->ScaleHeightRange(height_image, min_height, max_height);
+
+        // this should really just put the request onto a queue to be serviced in the update loop
+        // need to look at when we should get the current selection, seems a bit ugly for it to get the selection here.
+        auto selected_nodes = m_world_builder_plugin->GetCurrentSelection();
+        for (auto &node : selected_nodes)
+        {
+            if (Nodes::IsALandscapeObject(node))
+            {
+                auto lmap = Unigine::dynamic_ptr_cast<Unigine::LandscapeLayerMap>(node);
+                if (lmap)
+                {
+                    // not sure if the interface to this should be image path or actual image,
+                    m_terrain_manipulator->ScaleHeightImage(lmap, height_image);
+                    m_terrain_manipulator->SetTerrainHeight(lmap, height_image);
+                }
+            }
+        }
+
+
+        //m_world_builder_plugin->BroadcastMessageToPlugins(WorldBuilder::INTERNAL_MSG_ID::NODE_ADDED);
+    });
+
+    m_import_ground_image_gui = std::make_shared<import_ground_image_gui>();
+    m_import_ground_image_gui->SetImportCallback([this](std::string image_path)
+    {
+
+        // this should really just put the request onto a queue to be serviced in the update loop
+     // need to look at when we should get the current selection, seems a bit ugly for it to get the selection here.
+        auto selected_nodes = m_world_builder_plugin->GetCurrentSelection();
+        for (auto &node : selected_nodes)
+        {
+            if (Nodes::IsALandscapeObject(node))
+            {
+                auto lmap = Unigine::dynamic_ptr_cast<Unigine::LandscapeLayerMap>(node);
+                if (lmap)
+                {
+                    // not sure if the interface to this should be image path or actual image,
+                    m_terrain_manipulator->SetTerrainAlbedo(lmap, image_path);
+                }
+            }
+        }
+        //m_world_builder_plugin->BroadcastMessageToPlugins(WorldBuilder::INTERNAL_MSG_ID::NODE_ADDED);
+    });
+
+    // set the selection function to get the world builder selection
+    // this is a precursor to allowing the terrain to surface class to support getting editor selection
+    auto select_func = [this]() -> std::vector<Unigine::NodePtr> {
+        std::vector<Unigine::NodePtr> selected_nodes;
+
+        if (m_world_builder_plugin)
+            selected_nodes = m_world_builder_plugin->GetCurrentSelection();
+
+        return selected_nodes;
+    };
+    m_terrain_to_surface->SetGetSelectionCallback(select_func);
+
+    m_terrain_group_gui->addChild(m_terrain_creation_gui->GetWidget(), Unigine::Gui::ALIGN_BOTTOM | Unigine::Gui::ALIGN_EXPAND);
+    m_terrain_group_gui->addChild(m_terrain_painting->get_gui_wiget(), Unigine::Gui::ALIGN_BOTTOM | Unigine::Gui::ALIGN_EXPAND);
+    m_terrain_group_gui->addChild(m_import_ground_height_gui->GetWidget(), Unigine::Gui::ALIGN_BOTTOM | Unigine::Gui::ALIGN_EXPAND);
+    m_terrain_group_gui->addChild(m_import_ground_image_gui->GetWidget(), Unigine::Gui::ALIGN_BOTTOM | Unigine::Gui::ALIGN_EXPAND);
+    m_terrain_group_gui->addChild(m_terrain_to_surface->get_gui_wiget(), Unigine::Gui::ALIGN_BOTTOM | Unigine::Gui::ALIGN_EXPAND);
+
+    m_world_builder_plugin->GetPropertiesUIContainer()->addChild(m_terrain_group_gui, Unigine::Gui::ALIGN_BOTTOM | Unigine::Gui::ALIGN_EXPAND);
+
+    return Unigine::checked_ptr_cast<Unigine::Widget>(m_terrain_group_gui);
+
+}

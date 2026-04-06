@@ -1,0 +1,453 @@
+
+#include "pull_terrain_to_surface_gui.h"
+#include "unigine2_graphics/collapsible_widget.h"
+#include "unigine2_graphics/unigine2_utilities.h"
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <UnigineFileSystem.h>
+#include <UnigineMathLib.h>
+#include <UnigineWorld.h>
+
+namespace
+{
+    const auto WHITE_SPRITE     = "empty.png";
+    const auto FIT_TERRAIN_ICON = "fit_terrain_to_object.png";
+
+}
+
+pull_terrain_to_surface_gui::pull_terrain_to_surface_gui(Unigine::GuiPtr translation_gui,
+                                                         float           initial_flat_value,
+                                                         float           initial_falloff_value,
+                                                         float           initial_bias_value,
+                                                         float           initial_smoothing_value,
+                                                         int             initial_layer_order,
+                                                         int             initial_pull_target_mode)
+{
+    // this is our main collabisble widget that we are creating for someone to add to a gui somewhere.
+    m_collapsible_widget = std::shared_ptr<CollapsibleWidget>(
+      new CollapsibleWidget(translation_gui->translate("Fit Terrain To Object")));
+    // initialise our gui to hidden
+    m_collapsible_widget->hide();
+
+    // the create a container just for the collapsible content widget
+    // we don't do anything special on this widget, we will leave it to the widgets we add to it to make it
+    // easier to separate those out if they were to go somewhere else.
+    auto collapsible_content_container = Unigine::WidgetVBox::create(0, 2);
+    m_collapsible_widget->addContentWidget(collapsible_content_container);
+
+    // the actual container of our components
+    auto main_content_container = CreateMainContentWidget(translation_gui,
+                                                          initial_flat_value,
+                                                          initial_falloff_value,
+                                                          initial_bias_value,
+                                                          initial_smoothing_value,
+                                                          initial_layer_order,
+                                                          initial_pull_target_mode);
+    collapsible_content_container->addChild(main_content_container);
+}
+
+Unigine::WidgetPtr pull_terrain_to_surface_gui::CreateMainContentWidget(Unigine::GuiPtr translation_gui,
+                                                                        float           initial_flat_value,
+                                                                        float           initial_falloff_value,
+                                                                        float           initial_bias_value,
+                                                                        float           initial_smoothing_value,
+                                                                        int             initial_layer_order,
+                                                                        int             initial_pull_target_mode)
+{
+    // the create a container just for the collapsible content widget
+    // we don't do anything special on this widget, we will leave it to the widgets we add to it to make it
+    // easier to separate those out if they were to go somewhere else.
+    auto collapsible_content_container = Unigine::WidgetVBox::create(0, 2);
+    m_collapsible_widget->addContentWidget(collapsible_content_container);
+
+    // the actual container of our components
+    auto main_content_container = Unigine::WidgetVBox::create(0, 4);
+    collapsible_content_container->addChild(main_content_container);
+
+    // ------- Flat Slider
+    auto flat_terrain_slider_hbox = Unigine::WidgetHBox::create(4, 0);
+
+    // Create input field for size value (meters)
+    auto flat_terrain_input = unigine2_ui::CreatePropertyEditLineLabel(30, 15, 1, true);
+    flat_terrain_input->setText(std::to_string(initial_flat_value).c_str()); // Set initial value matching slider
+    flat_terrain_input->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    flat_terrain_input->setToolTip(translation_gui->translate("Enter size value in meters"));
+
+    // create a slider to associate
+    auto flat_terrain_slider_gui = Unigine::WidgetSlider::create(1, 100);
+    flat_terrain_slider_gui->setButtonWidth(20);
+    flat_terrain_slider_gui->setButtonHeight(20);
+    flat_terrain_slider_gui->setValue(initial_flat_value);
+
+    // attach our slider to our edit line to keep them in sync automatically
+    // we set a max expand that lets us set values outside of the range of the slider.
+    flat_terrain_slider_gui->addAttach(flat_terrain_input, "%d", 1, Unigine::Gui::ATTACH_MAX_EXPAND);
+    flat_terrain_slider_gui->setMaxExpand(400);
+
+    auto flat_label   = unigine2_ui::CreateWidgetLabel(translation_gui->translate("Flat"), 40, 10);
+    auto flat_spacer  = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+    auto flat_spacer2 = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+
+    auto flat_terrain_slider_range_label = unigine2_ui::CreateWidgetLabel(translation_gui->translate("m"), 40, 10);
+    flat_terrain_slider_range_label->setTextAlign(Unigine::Gui::ALIGN_LEFT);
+
+    // now add our components to our hbox
+    flat_terrain_slider_hbox->addChild(flat_label, Unigine::Gui::ALIGN_LEFT);
+    flat_terrain_slider_hbox->addChild(flat_spacer, Unigine::Gui::ALIGN_LEFT);
+    flat_terrain_slider_hbox->addChild(flat_terrain_slider_gui, Unigine::Gui::ALIGN_EXPAND);
+    flat_terrain_slider_hbox->addChild(flat_spacer2, Unigine::Gui::ALIGN_RIGHT);
+    flat_terrain_slider_hbox->addChild(flat_terrain_input, Unigine::Gui::ALIGN_RIGHT);
+    flat_terrain_slider_hbox->addChild(flat_terrain_slider_range_label, Unigine::Gui::ALIGN_RIGHT);
+    flat_terrain_slider_hbox->arrange();
+
+    main_content_container->addChild(flat_terrain_slider_hbox, Unigine::Gui::ALIGN_TOP | Unigine::Gui::ALIGN_EXPAND);
+
+    // ------- Falloff Slider
+    auto falloff_terrain_slider_hbox = Unigine::WidgetHBox::create(4, 0);
+
+    // Create input field for falloff value (meters)
+    auto falloff_terrain_input = unigine2_ui::CreatePropertyEditLineLabel(30, 15, 1, true);
+    falloff_terrain_input->setText(std::to_string(initial_falloff_value).c_str()); // Set initial value matching slider
+    falloff_terrain_input->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    falloff_terrain_input->setToolTip(translation_gui->translate("Enter falloff value in meters"));
+
+    // create a slider to associate
+    // these are integer sliders which limits our values to int, which is a bit ugly, maybe shoudl should try to support
+    // float values?
+    auto falloff_terrain_slider_gui = Unigine::WidgetSlider::create(1, 300);
+    falloff_terrain_slider_gui->setButtonWidth(20);
+    falloff_terrain_slider_gui->setButtonHeight(20);
+    falloff_terrain_slider_gui->setValue(initial_falloff_value);
+
+    // attach our slider to our edit line to keep them in sync automatically
+    // we set a max expand that lets us set values outside of the range of the slider.
+    falloff_terrain_slider_gui->addAttach(falloff_terrain_input, "%d", 1, Unigine::Gui::ATTACH_MAX_EXPAND);
+    falloff_terrain_slider_gui->setMaxExpand(400);
+
+    auto falloff_label   = unigine2_ui::CreateWidgetLabel(translation_gui->translate("Falloff"), 40, 10);
+    auto falloff_spacer  = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+    auto falloff_spacer2 = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+
+    auto falloff_terrain_slider_range_label = unigine2_ui::CreateWidgetLabel(translation_gui->translate("m"), 40, 10);
+    falloff_terrain_slider_range_label->setTextAlign(Unigine::Gui::ALIGN_LEFT);
+
+    // now add our components to our hbox
+    falloff_terrain_slider_hbox->addChild(falloff_label, Unigine::Gui::ALIGN_LEFT);
+    falloff_terrain_slider_hbox->addChild(falloff_spacer, Unigine::Gui::ALIGN_LEFT);
+    falloff_terrain_slider_hbox->addChild(falloff_terrain_slider_gui, Unigine::Gui::ALIGN_EXPAND);
+    falloff_terrain_slider_hbox->addChild(falloff_spacer2, Unigine::Gui::ALIGN_RIGHT);
+    falloff_terrain_slider_hbox->addChild(falloff_terrain_input, Unigine::Gui::ALIGN_RIGHT);
+    falloff_terrain_slider_hbox->addChild(falloff_terrain_slider_range_label, Unigine::Gui::ALIGN_RIGHT);
+    falloff_terrain_slider_hbox->arrange();
+
+    main_content_container->addChild(falloff_terrain_slider_hbox, Unigine::Gui::ALIGN_TOP | Unigine::Gui::ALIGN_EXPAND);
+
+    // ---- bias Slider
+    static constexpr float bias_multiplier          = 10.0f;
+    auto                   bias_terrain_slider_hbox = Unigine::WidgetHBox::create(4, 0);
+
+    // Create input field for bias value (meters)
+    auto bias_terrain_input = unigine2_ui::CreatePropertyEditLineLabel(30, 15, 1, true);
+    bias_terrain_input->setText(std::to_string(initial_bias_value).c_str()); // Set initial value matching slider
+    bias_terrain_input->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    bias_terrain_input->setToolTip(translation_gui->translate("Enter bias value in meters"));
+
+    // create a slider to associate
+    // these are integer sliders which limits our values to int, which is a bit ugly, maybe shoudl should try to support
+    // float values?
+    auto bias_terrain_slider_gui = Unigine::WidgetSlider::create(-50, 50);
+    bias_terrain_slider_gui->setButtonWidth(20);
+    bias_terrain_slider_gui->setButtonHeight(20);
+    bias_terrain_slider_gui->setValue(initial_bias_value * bias_multiplier);
+
+    // attach our slider to our edit line to keep them in sync automatically
+    // we set a max expand that lets us set values outside of the range of the slider.
+    // bias_terrain_slider_gui->addAttach(bias_terrain_input, "%d", 10, Unigine::Gui::ATTACH_MAX_EXPAND);
+    bias_terrain_slider_gui->setMaxExpand(400);
+
+    // unfortunately, when even though the edit value changes when you move the slider based on addAttach,
+    // the eventchange callback on the edit does not fire, so we need to do that ourselves here.
+    bias_terrain_slider_gui->getEventChanged().connectUnsafe(
+      [this, bias_terrain_input](const Unigine::WidgetPtr& widget)
+      {
+          Unigine::WidgetSliderPtr slider_widget = Unigine::checked_ptr_cast<Unigine::WidgetSlider>(widget);
+          if (slider_widget->isValid())
+          {
+              int   value     = slider_widget->getValue();
+              float new_value = float(value) / bias_multiplier;
+              bias_terrain_input->setText(std::to_string(new_value).c_str());
+          }
+      });
+
+    // Update our internal value when the input changes
+    bias_terrain_input->getEventChanged().connectUnsafe(
+      [this, bias_terrain_slider_gui](const Unigine::WidgetPtr& widget)
+      {
+          Unigine::WidgetEditLinePtr edit_widget = Unigine::checked_ptr_cast<Unigine::WidgetEditLine>(widget);
+          if (edit_widget->isValid())
+          {
+              const char* input_value = edit_widget->getText();
+              float       new_value;
+              try
+              {
+                  new_value = std::stof(input_value);
+              }
+              catch (...)
+              {
+                  new_value = 0.0f;
+              }
+              int new_value2 = int(new_value * bias_multiplier);
+              if (bias_terrain_slider_gui->getValue() != new_value2)
+              {
+                  bias_terrain_slider_gui->setValue(new_value2);
+              }
+          }
+      });
+
+    Unigine::WidgetLabelPtr  bias_label   = unigine2_ui::CreateWidgetLabel(translation_gui->translate("Bias"), 40, 10);
+    Unigine::WidgetSpritePtr bias_spacer  = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+    Unigine::WidgetSpritePtr bias_spacer2 = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+
+    Unigine::WidgetLabelPtr bias_terrain_slider_range_label = unigine2_ui::CreateWidgetLabel(translation_gui->translate("m"), 40, 10);
+    bias_terrain_slider_range_label->setTextAlign(Unigine::Gui::ALIGN_LEFT);
+
+    // now add our components to our hbox
+    bias_terrain_slider_hbox->addChild(bias_label, Unigine::Gui::ALIGN_LEFT);
+    bias_terrain_slider_hbox->addChild(bias_spacer, Unigine::Gui::ALIGN_LEFT);
+    bias_terrain_slider_hbox->addChild(bias_terrain_slider_gui, Unigine::Gui::ALIGN_EXPAND);
+    bias_terrain_slider_hbox->addChild(bias_spacer2, Unigine::Gui::ALIGN_RIGHT);
+    bias_terrain_slider_hbox->addChild(bias_terrain_input, Unigine::Gui::ALIGN_RIGHT);
+    bias_terrain_slider_hbox->addChild(bias_terrain_slider_range_label, Unigine::Gui::ALIGN_RIGHT);
+    bias_terrain_slider_hbox->arrange();
+
+    main_content_container->addChild(bias_terrain_slider_hbox, Unigine::Gui::ALIGN_TOP | Unigine::Gui::ALIGN_EXPAND);
+
+    // ------- Target Layer
+    m_target_layer_hbox = Unigine::WidgetHBox::create(4, 0);
+
+    // ---- power Slider
+    static constexpr float smoothing_multiplier          = 100.0f;
+    Unigine::WidgetHBoxPtr smoothing_terrain_slider_hbox = Unigine::WidgetHBox::create(4, 0);
+
+    // Create input field for power value (meters)
+    Unigine::WidgetEditLinePtr smoothing_terrain_input = unigine2_ui::CreatePropertyEditLineLabel(30, 15, 1, true);
+    smoothing_terrain_input->setText(std::to_string(initial_smoothing_value).c_str()); // Set initial value matching
+                                                                                       // slider
+    smoothing_terrain_input->setValidator(Unigine::Gui::VALIDATOR_FLOAT);
+    smoothing_terrain_input->setToolTip(translation_gui->translate("Enter power value in meters"));
+
+    // create a slider to associate
+    // these are integer sliders which limits our values to int, which is a bit ugly, maybe shoudl should try to support
+    // float values?
+    Unigine::WidgetSliderPtr smoothing_terrain_slider_gui = Unigine::WidgetSlider::create(0, 100);
+    smoothing_terrain_slider_gui->setButtonWidth(20);
+    smoothing_terrain_slider_gui->setButtonHeight(20);
+    smoothing_terrain_slider_gui->setValue(initial_smoothing_value * smoothing_multiplier);
+
+    // attach our slider to our edit line to keep them in sync automatically
+    // we set a max expand that lets us set values outside of the range of the slider.
+    // smoothing_terrain_slider_gui->addAttach(smoothing_terrain_input, "%d", 10, Unigine::Gui::ATTACH_MAX_EXPAND);
+    smoothing_terrain_slider_gui->setMaxExpand(400);
+
+    // unfortunately, when even though the edit value changes when you move the slider based on addAttach,
+    // the eventchange callback on the edit does not fire, so we need to do that ourselves here.
+    smoothing_terrain_slider_gui->getEventChanged().connectUnsafe(
+      [this, smoothing_terrain_input](const Unigine::WidgetPtr& widget)
+      {
+          Unigine::WidgetSliderPtr slider_widget = Unigine::checked_ptr_cast<Unigine::WidgetSlider>(widget);
+          if (slider_widget->isValid())
+          {
+              int   value     = slider_widget->getValue();
+              float new_value = float(value) / smoothing_multiplier;
+              smoothing_terrain_input->setText(std::to_string(new_value).c_str());
+          }
+      });
+
+    // Update our internal value when the input changes
+    smoothing_terrain_input->getEventChanged().connectUnsafe(
+      [this, smoothing_terrain_slider_gui](const Unigine::WidgetPtr& widget)
+      {
+          Unigine::WidgetEditLinePtr edit_widget = Unigine::checked_ptr_cast<Unigine::WidgetEditLine>(widget);
+          if (edit_widget->isValid())
+          {
+              const char* input_value = edit_widget->getText();
+              float       new_value;
+              try
+              {
+                  new_value = std::stof(input_value);
+              }
+              catch (...)
+              {
+                  new_value = 0.0f;
+              }
+              int new_value2 = int(new_value * smoothing_multiplier);
+              if (smoothing_terrain_slider_gui->getValue() != new_value2)
+              {
+                  smoothing_terrain_slider_gui->setValue(new_value2);
+              }
+          }
+      });
+
+    auto smoothing_label   = unigine2_ui::CreateWidgetLabel(translation_gui->translate("Smoothing"), 40, 10);
+    auto smoothing_spacer  = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+    auto smoothing_spacer2 = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+
+    auto smoothing_terrain_slider_range_label = unigine2_ui::CreateWidgetLabel("", 40, 10);
+    smoothing_terrain_slider_range_label->setTextAlign(Unigine::Gui::ALIGN_LEFT);
+
+    // now add our components to our hbox
+    smoothing_terrain_slider_hbox->addChild(smoothing_label, Unigine::Gui::ALIGN_LEFT);
+    smoothing_terrain_slider_hbox->addChild(smoothing_spacer, Unigine::Gui::ALIGN_LEFT);
+    smoothing_terrain_slider_hbox->addChild(smoothing_terrain_slider_gui, Unigine::Gui::ALIGN_EXPAND);
+    smoothing_terrain_slider_hbox->addChild(smoothing_spacer2, Unigine::Gui::ALIGN_RIGHT);
+    smoothing_terrain_slider_hbox->addChild(smoothing_terrain_input, Unigine::Gui::ALIGN_RIGHT);
+    smoothing_terrain_slider_hbox->addChild(smoothing_terrain_slider_range_label, Unigine::Gui::ALIGN_RIGHT);
+    smoothing_terrain_slider_hbox->arrange();
+
+    main_content_container->addChild(smoothing_terrain_slider_hbox, Unigine::Gui::ALIGN_TOP | Unigine::Gui::ALIGN_EXPAND);
+
+    auto target_layer_label = unigine2_ui::CreateWidgetLabel(translation_gui->translate("Target Layer Order"), 40, 10);
+    auto spacer             = unigine2_ui::CreateColoredSprite(Unigine::Math::vec4_zero, 10, 1);
+    auto target_layer_input = unigine2_ui::CreatePropertyEditLineLabel(30, 15, 1, true);
+    target_layer_input->setText(std::to_string(initial_layer_order).c_str()); // Set initial value
+    target_layer_input->setValidator(Unigine::Gui::VALIDATOR_INT);
+    target_layer_input->setToolTip(
+      translation_gui->translate("Set the landscape layer map order index that will be used for modifications"));
+
+    m_target_layer_hbox->addChild(target_layer_label, Unigine::Gui::ALIGN_LEFT);
+    m_target_layer_hbox->addChild(spacer, Unigine::Gui::ALIGN_LEFT);
+    m_target_layer_hbox->addChild(target_layer_input, Unigine::Gui::ALIGN_LEFT);
+
+    main_content_container->addChild(m_target_layer_hbox, Unigine::Gui::ALIGN_TOP | Unigine::Gui::ALIGN_EXPAND);
+
+    // hide by default for world builder where we only have a single layer of landscape.
+    // TODO: need to look at controlling this better for wb vs unigine editor
+    m_target_layer_hbox->setHidden(true);
+
+    // Target Mode
+    m_pull_target_mode_hbox = Unigine::WidgetHBox::create(5);
+    auto label              = Unigine::WidgetLabel::create(translation_gui->translate("Fit Target Mode"));
+    label->setWidth(100);
+    m_pull_target_mode_hbox->addChild(label, Unigine::Gui::ALIGN_LEFT);
+    m_pull_target_mode_selection = Unigine::WidgetComboBox::create();
+    m_pull_target_mode_selection->addItem(translation_gui->translate("Surface Property"));
+    m_pull_target_mode_selection->addItem(translation_gui->translate("Bounding Box"));
+    m_pull_target_mode_selection->setCurrentItem(initial_pull_target_mode);
+    m_pull_target_mode_hbox->addChild(m_pull_target_mode_selection);
+    m_pull_target_mode_selection->getEventChanged().connect(
+      pull_target_mode_selection_callback,
+      [this](const Unigine::WidgetPtr& widget)
+      {
+          Unigine::WidgetComboBoxPtr combo_widget = Unigine::checked_ptr_cast<Unigine::WidgetComboBox>(widget);
+          if (combo_widget->isValid())
+          {
+              if (m_pull_target_mode_cb)
+                  m_pull_target_mode_cb(combo_widget->getCurrentItem());
+          }
+      });
+
+    // hide by default for world builder where we select mode automatically based on node selection
+    // TODO: need to look at controlling this better for wb vs unigine editor
+    m_pull_target_mode_hbox->setHidden(true);
+
+    main_content_container->addChild(m_pull_target_mode_hbox, Unigine::Gui::ALIGN_TOP | Unigine::Gui::ALIGN_EXPAND);
+
+    auto terrain_to_selection_button = Unigine::WidgetButton::create();
+    terrain_to_selection_button->setWidth(40);
+    terrain_to_selection_button->setHeight(30);
+    terrain_to_selection_button->setText(translation_gui->translate("Apply"));
+    terrain_to_selection_button->setToolTip(translation_gui->translate("Modify the ground height to fit to the selected objects."));
+    terrain_to_selection_button->setTextAlign(Unigine::Gui::ALIGN_CENTER);
+    terrain_to_selection_button->arrange();
+
+    terrain_to_selection_button->getEventClicked().connectUnsafe(
+      [this, flat_terrain_input, falloff_terrain_input, bias_terrain_input, smoothing_terrain_input, target_layer_input](
+        const Unigine::WidgetPtr& apply_button_widget,
+        int                       mouse_buttons)
+      {
+          if (flat_terrain_input->isValid() && falloff_terrain_input->isValid())
+          {
+              const char* flat_terrain_input_text      = flat_terrain_input->getText();
+              const char* falloff_terrain_input_text   = falloff_terrain_input->getText();
+              const char* bias_terrain_input_text      = bias_terrain_input->getText();
+              const char* smoothing_terrain_input_text = smoothing_terrain_input->getText();
+              const char* target_layer_input_text      = target_layer_input->getText();
+
+              try
+              {
+                  float flat_value         = std::stof(flat_terrain_input_text);
+                  float falloff_value      = std::stof(falloff_terrain_input_text);
+                  float bias_value         = std::stof(bias_terrain_input_text);
+                  float smoothing_value    = std::stof(smoothing_terrain_input_text);
+                  int   target_layer_order = std::stoi(target_layer_input_text);
+
+                  if (m_apply_cb)
+                  {
+                      m_apply_cb(flat_value, falloff_value, bias_value, smoothing_value, target_layer_order);
+                  }
+              }
+              catch (...)
+              {
+                  // #TODO: Highlight the invalid text input
+              }
+          }
+      });
+
+    // container for applying the import
+    auto buttons_container_uusl = Unigine::WidgetHBox::create(5, 0);
+    buttons_container_uusl->addChild(terrain_to_selection_button, Unigine::Gui::ALIGN_RIGHT | Unigine::Gui::ALIGN_EXPAND);
+    buttons_container_uusl->arrange();
+    main_content_container->addChild(buttons_container_uusl, Unigine::Gui::ALIGN_EXPAND);
+
+    return main_content_container;
+}
+
+Unigine::WidgetPtr pull_terrain_to_surface_gui::GetWidget()
+{
+    return Unigine::checked_ptr_cast<Unigine::Widget>(m_collapsible_widget->get());
+}
+
+void pull_terrain_to_surface_gui::Show()
+{
+    m_collapsible_widget->show();
+}
+
+void pull_terrain_to_surface_gui::Hide()
+{
+    m_collapsible_widget->hide();
+}
+
+void pull_terrain_to_surface_gui::UpdateUI(std::vector<Unigine::NodePtr> selected_nodes)
+{
+    // any operation where we want to update the ui values automatically based on selection?
+}
+
+void pull_terrain_to_surface_gui::ShowTargetLayerEntry()
+{
+    m_target_layer_hbox->setHidden(true);
+}
+
+void pull_terrain_to_surface_gui::HideTargetLayerEntry()
+{
+    m_target_layer_hbox->setHidden(false);
+}
+
+void pull_terrain_to_surface_gui::ShowPullTargetModeEntry()
+{
+    m_pull_target_mode_hbox->setHidden(true);
+}
+
+void pull_terrain_to_surface_gui::HidePullTargetModeEntry()
+{
+    m_pull_target_mode_hbox->setHidden(false);
+}
+
+void pull_terrain_to_surface_gui::SetPullTargetMode(int in_pull_target_mode)
+{
+    // disable our events before updating
+    pull_target_mode_selection_callback.setEnabled(false);
+    m_pull_target_mode_selection->setCurrentItem(in_pull_target_mode);
+    pull_target_mode_selection_callback.setEnabled(true);
+}

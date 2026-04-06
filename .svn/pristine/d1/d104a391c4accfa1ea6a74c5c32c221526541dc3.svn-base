@@ -1,0 +1,966 @@
+
+#define _USE_MATH_DEFINES
+#include "terrain_manipulator.h"
+#include "GeometryHelper.h"
+#include "TerrainHelper.h"
+#include <math.h>
+#include <random>
+#include <sstream>
+#include <UnigineFileSystem.h>
+#include <UnigineMaterials.h>
+
+using namespace Unigine;
+using namespace Math;
+
+namespace
+{
+
+    static const auto TERRAIN_NAME_PREFIX = "TerrainLayerMap_";
+
+    dvec3 find_midpoint(Vec3 p1, Vec3 p2, Vec3 p3, Vec3 p4)
+    {
+        // Calculate the center of the square
+        double cx = (p1.x + p2.x + p3.x + p4.x) / 4.0;
+        double cy = (p1.y + p2.y + p3.y + p4.y) / 4.0;
+        double cz = (p1.z + p2.z + p3.z + p4.z) / 4.0;
+
+        // Calculate the midpoint between the center and one of the vertices
+        Math::dvec3 midpoint;
+        midpoint.x = (cx + p1.x) / 2.0;
+        midpoint.y = (cy + p1.y) / 2.0;
+        midpoint.z = (cz + p1.z) / 2.0;
+
+        return midpoint;
+    };
+
+    const std::string TEMP_FOLDER = std::string(Unigine::FileSystem::getRootMount()->getDataPath()) + "/world_builder/temp/";
+    const std::string IMAGE_EXTENSTION = ".png";
+}
+
+terrain_manipulator::terrain_manipulator()
+{
+    //<const UGUID &, int, const Ptr<LandscapeTextures> &, const Math::ivec2 &, int>
+    Landscape::getEventTextureDraw().connectUnsafe(
+      [&](const UGUID& guid, int id, const LandscapeTexturesPtr& buffer, const Math::ivec2& coord, int data_mask)
+      { OnTextureDraw(guid, id, buffer, coord, data_mask); });
+}
+
+terrain_manipulator::~terrain_manipulator()
+{
+}
+
+bool terrain_manipulator::IsTerrainManipulationInProgress() const
+{
+    return m_in_progress;
+}
+
+size_t terrain_manipulator::NumberOfRemainingOperations() const
+{
+    return m_operations_blocked ? m_brush_buffer.size() + m_lock_count : m_brush_buffer.size();
+}
+
+void terrain_manipulator::BlockBrushOperations(bool block)
+{
+    m_operations_blocked = block;
+}
+
+void terrain_manipulator::SetBlockOperationCount(int count)
+{
+    m_lock_count = count;
+    m_operations_blocked = m_lock_count > 0;
+}
+
+void terrain_manipulator::RaiseTerrainToSurface(Unigine::NodePtr     node,
+                                                std::string          surface_name,
+                                                Unigine::Math::dvec2 brush_size,
+                                                Unigine::MaterialPtr brush_material)
+{
+    if (node->getType() == Node::OBJECT_MESH_STATIC)
+    {
+        auto static_mesh{Unigine::static_ptr_cast<ObjectMeshStatic>(node)};
+
+        const auto surface_verts{GetSurfaceVerticesFromMeshInWorldSpace(static_mesh, surface_name)};
+
+        std::vector<Unigine::Math::vec3> mid_points;
+
+        for (int i = 0; i < surface_verts.size() - 1; i += 2)
+        {
+            auto p1 = surface_verts[i];
+            auto p2 = surface_verts[i + 1];
+
+            float midX = (p1.x + p2.x) / 2.0f;
+            float midY = (p1.y + p2.y) / 2.0f;
+            float midZ = (p1.z + p2.z) / 2.0f;
+
+            mid_points.push_back(Unigine::Math::vec3(midX, midY, midZ));
+        }
+
+        if (mid_points.empty())
+            return;
+
+        std::vector<Unigine::Math::vec3> brush_locales;
+        for (int i = 0; i < mid_points.size() - 1; i++)
+        {
+            auto samples = SampleLine(mid_points[i], mid_points[i + 1], brush_size.x * 0.4f);
+
+            brush_locales.push_back(mid_points[i]);
+            brush_locales.insert(brush_locales.end(), samples.begin(), samples.end());
+            brush_locales.push_back(mid_points[i + 1]);
+        }
+
+        auto calculate_direction = [](Unigine::Math::vec3 x1, Unigine::Math::vec3 x2)
+        {
+            double delta_x   = x2.x - x1.x;
+            double delta_y   = x2.y - x1.y;
+            double angle_rad = std::atan2(delta_y, delta_x);
+            double angle_deg = angle_rad * 180 / M_PI;
+            return angle_deg;
+        };
+
+        float brush_rotation = 0;
+        for (int i = 0; i < brush_locales.size(); i++)
+        {
+            auto v = brush_locales[i];
+
+            if (i != brush_locales.size())
+            {
+                auto v1        = brush_locales[i + 1];
+                brush_rotation = calculate_direction(v, v1) + 90;
+            }
+
+            // RaiseTerrainToVertex(v, brush_size, brush_material, brush_rotation);
+        }
+    }
+}
+
+void terrain_manipulator::HeightImageMakeRGBA32F(Unigine::ImagePtr height_image)
+{
+    if (height_image->getFormat() != Unigine::Image::FORMAT_RGBA32F)
+    {
+        Unigine::Log::warning("Attempting to reformat to RGBA32F from format %s.\n",
+                              Unigine::Image::getFormatName(height_image->getFormat()));
+
+        auto reformat_success = height_image->convertToFormat(Unigine::Image::FORMAT_RGBA32F) > 0;
+        if (!reformat_success)
+        {
+            Unigine::Log::warning("Attempt to reformat failed, please supply an uncompressed 2D image to support resize.\n");
+            return;
+        }
+        // duplicate our r channel into our GB channels as this is expected by the brush
+        height_image->copy(height_image, 1, 0);
+        height_image->copy(height_image, 2, 0);
+    }
+}
+
+void terrain_manipulator::ScaleHeightImage(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image)
+{
+    HeightImageMakeRGBA32F(height_image);
+
+    auto landscape_resolution = lmap->getResolution();
+    if (height_image->getWidth() != landscape_resolution.x || height_image->getHeight() != landscape_resolution.y)
+    {
+        Unigine::Log::warning("The albedo image resolution (%d %d) does not match the resolution of tile (%d %d), attempting resize.\n",
+                              height_image->getWidth(),
+                              height_image->getHeight(),
+                              landscape_resolution.x,
+                              landscape_resolution.y);
+        auto resize_success = height_image->resize(landscape_resolution.x, landscape_resolution.y);
+        if (!resize_success)
+        {
+            Unigine::Log::warning("Attempt to resize failed, please supply an uncompressed 2D image to support resize.\n");
+            return;
+        }
+    }
+}
+
+void terrain_manipulator::ScaleHeightRange(Unigine::ImagePtr height_image, float min_height, float max_height)
+{
+    HeightImageMakeRGBA32F(height_image);
+
+    Unigine::Log::message("Scaling height image to %g : %g.\n", min_height, max_height);
+
+    Unigine::Math::dvec2 current_range_r;
+    Unigine::Math::dvec2 current_range_g;
+    Unigine::Math::dvec2 current_range_b;
+    Unigine::Math::dvec2 current_range_a;
+    height_image->calcRange(current_range_r, current_range_g, current_range_b, current_range_a);
+
+    // change range does not seem to support negative values.
+    // and possibly seems to mess with the alpha channel, so doing it manually ourselves
+    for (int x = 0; x < height_image->getWidth(); x++)
+    {
+        for (int y = 0; y < height_image->getHeight(); y++)
+        {
+            auto pix = height_image->get2D(x, y);
+            // assuming all 3 rgb channels are the same, we calculate just the red channel and assign to all
+            auto   range = current_range_r.y - current_range_r.x;
+            double t     = 0;
+            if (fabs(range) > 0)
+            {
+                t            = pix.f.r / range;
+                auto new_val = Unigine::Math::lerp(static_cast<double>(min_height), static_cast<double>(max_height), t);
+                pix.f.r      = new_val;
+                pix.f.g      = new_val;
+                pix.f.b      = new_val;
+            }
+
+            // setting the color of the image pixel at (x,y)
+            height_image->set2D(x, y, pix);
+        }
+    }
+}
+
+void terrain_manipulator::SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image)
+{
+    // get a brush for applying our paint.
+    auto brush = getTerrainTileBrush(height_image);
+    // if we were not able to get a brush correcty, then don't bother doing anything else
+    if (!brush)
+        return;
+
+    // Create and populate our brush data, push it into our brush buffer queue.
+    BrushOperationData data;
+
+    // height image will be absolute heights in metres (not normalised) so our height (multiplier) here is 1
+    data.brush_height      = 1;
+    data.brush_size        = 1;
+    data.brush_rotation    = 0;
+    data.brush_opacity     = 1;
+    data.height_blend_mode = HeightBlendMode::Alpha;
+    data.brush_material    = brush;
+    data.modify_heights    = true;
+
+    m_brush_buffer.push(data);
+
+    // We are painting the entire tile in one hit
+    PerformTerrainManipulationOperation(lmap, Unigine::Math::ivec2{0, 0}, lmap->getResolution());
+}
+
+void terrain_manipulator::SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap,
+                                                    Unigine::UGUID                guid,
+                                                    int                           id,
+                                                    Unigine::LandscapeTexturesPtr buffer,
+                                                    Unigine::Math::ivec2          coord,
+                                                    int                           data_mask,
+                                                    Unigine::TexturePtr           height_texture,
+                                                    bool                          overwrite_with_32bit_float_data)
+{
+    if (overwrite_with_32bit_float_data)
+    {
+        std::string base_brush_mat_name = "terrain_brush_r32f_overwrite.basebrush";
+
+        auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(base_brush_mat_name.c_str()));
+        if (!file_guid.isValid())
+        {
+            Log::warning("Could not find brush material needed to perform terrain modification: %s\n",
+                         base_brush_mat_name.c_str());
+            return;
+        }
+
+        auto brush_material = Unigine::Materials::findMaterialByFileGUID(file_guid)->inherit();
+
+        brush_material->setTexture("terrain_height", buffer->getHeight());
+        brush_material->setTexture("new_height", height_texture);
+
+        brush_material->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+    }
+    else
+    {
+        // get a brush for applying our paint.
+        Unigine::MaterialPtr brush = getTerrainTileBrush(height_texture);
+
+        // if we were not able to get a brush correcty, then don't bother doing anything else
+        if (!brush)
+            return;
+
+        SetTerrainHeightImmediate(lmap, guid, id, buffer, coord, data_mask, brush);
+    }
+}
+
+void terrain_manipulator::SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap,
+                                                    Unigine::UGUID                guid,
+                                                    int                           id,
+                                                    Unigine::LandscapeTexturesPtr buffer,
+                                                    Unigine::Math::ivec2          coord,
+                                                    int                           data_mask,
+                                                    Unigine::ImagePtr             height_image)
+{
+    // get a brush for applying our paint.
+    Unigine::MaterialPtr brush = getTerrainTileBrush(height_image);
+
+    SetTerrainHeightImmediate(lmap, guid, id, buffer, coord, data_mask, brush);
+}
+
+void terrain_manipulator::SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap,
+                                                    Unigine::UGUID                guid,
+                                                    int                           id,
+                                                    Unigine::LandscapeTexturesPtr buffer,
+                                                    Unigine::Math::ivec2          coord,
+                                                    int                           data_mask,
+                                                    Unigine::MaterialPtr          brush)
+{
+    // Create and populate our brush data, push it into our brush buffer queue.
+    BrushOperationData data;
+
+    // height image will be absolute heights in metres (not normalised) so our height (mulitiplier) here is 1
+    data.brush_height      = 1;
+    data.brush_size        = 1;
+    data.brush_rotation    = 0;
+    data.brush_opacity     = 1;
+    data.height_blend_mode = HeightBlendMode::Alpha;
+    data.brush_material    = brush;
+    data.modify_heights    = true;
+
+    ApplyBrush(data, guid, id, buffer, coord, data_mask);
+}
+
+void terrain_manipulator::SetTerrainAlbedo(Unigine::LandscapeLayerMapPtr lmap, std::string image_file_path)
+{
+    // base brush from unigine can set the albedo
+    std::string base_brush_mat_name = "brush.basebrush";
+
+    auto file_guid = Unigine::FileSystem::getGUID(Unigine::FileSystem::resolvePartialVirtualPath(base_brush_mat_name.c_str()));
+    if (!file_guid.isValid())
+    {
+        Unigine::Log::warning("Could not find brush material needed to perform terrain modification: %s\n",
+                              base_brush_mat_name.c_str());
+        return;
+    }
+    auto brush_material = Unigine::Materials::findMaterialByFileGUID(file_guid)->inherit();
+
+    Unigine::ImagePtr albedo_image = Unigine::Image::create(
+      Unigine::FileSystem::resolvePartialVirtualPath(image_file_path.c_str()));
+    if (!albedo_image.isValid())
+    {
+        Unigine::Log::warning("Could not create valid image from source: %s\n", image_file_path.c_str());
+        return;
+    }
+    auto landscape_resolution = lmap->getResolution();
+    if (albedo_image->getWidth() != landscape_resolution.x || albedo_image->getHeight() != landscape_resolution.y)
+    {
+        Unigine::Log::warning("The albedo image resolution (%d %d) does not match the resolution of tile (%d %d), attempting resize.\n",
+                              albedo_image->getWidth(),
+                              albedo_image->getHeight(),
+                              landscape_resolution.x,
+                              landscape_resolution.y);
+        auto resize_success = albedo_image->resize(landscape_resolution.x, landscape_resolution.y);
+        if (!resize_success)
+        {
+            Unigine::Log::warning("Attempt to resize failed, please supply an uncompressed 2D image to support resize.\n");
+            return;
+        }
+    }
+
+    // the new albedo image goes into the "opacity" texture
+    auto height_texture_index = brush_material->findTexture("opacity");
+    brush_material->setTextureImage(height_texture_index, albedo_image);
+
+    // Create and populate our brush data, push it into our brush buffer queue.
+    BrushOperationData data;
+
+    // height image will be absolute heights in metres (not normalised) so our height (mulitiplier) here is 1
+    data.brush_material    = brush_material;
+    data.brush_size        = 1;
+    data.brush_height      = 1;
+    data.brush_rotation    = 0;
+    data.brush_opacity     = 1;
+    data.height_blend_mode = HeightBlendMode::Alpha;
+    data.modify_albedo     = true;
+
+    m_brush_buffer.push(data);
+
+    // We are painting the entire tile in one hit
+    PerformTerrainManipulationOperation(lmap, Unigine::Math::ivec2{0, 0}, lmap->getResolution());
+}
+
+void terrain_manipulator::PaintTerrainHeightAt(const Unigine::Math::Vec3& world_position, BrushOperationData brush_data)
+{
+    auto terrain = Landscape::getActiveTerrain();
+    if (terrain)
+    {
+        // TODO: need to handle drawing at the edges.
+        // either need to find adjacent tiles and do subsequent draws on them if they are in the region
+        // or we could do unigine editor style and make you select the tile to edit
+        // for now you need to move teh cursor and do another draw with the cursor on the adjacent tile.
+        auto closest_lmap = GetClosestLandscapeLayerMap(terrain, world_position);
+
+        // Calculating the bound of the layer map area to be affected by the brush
+        auto brush_local_position = closest_lmap->getIWorldTransform() * world_position;
+
+        quat brush_world_rotation = quat(vec3_up, brush_data.brush_rotation);
+        quat brush_local_rotation = brush_world_rotation * inverse(closest_lmap->getWorldRotation());
+
+        auto half_size = brush_data.brush_size / 2.0f;
+
+        ivec2 drawing_region_coord;
+        ivec2 drawing_region_size;
+        CalculateDrawingRegion(brush_local_position,
+                               brush_local_rotation,
+                               Unigine::Math::dvec2{half_size, half_size},
+                               closest_lmap,
+                               drawing_region_coord,
+                               drawing_region_size);
+
+        m_brush_buffer.push(brush_data);
+        PerformTerrainManipulationOperation(closest_lmap, drawing_region_coord, drawing_region_size);
+    }
+}
+
+void terrain_manipulator::RaiseTerrainToBoundingBox(Unigine::NodePtr node, Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material)
+{
+    // need the hierarchy bound box to include children (especially for reference nodes)
+    // we use the bb not the sphere here as we want a good z value
+    auto node_bounds_box = node->getHierarchyWorldBoundBox();
+
+    auto center = node_bounds_box.getCenter();
+    center.z    = node_bounds_box.minimum.z;
+
+    RaiseTerrainToVertex(center, brush_size, brush_material, 0);
+}
+
+void terrain_manipulator::RaiseTerrainToVertices(std::vector<Unigine::Math::dvec3> vertices,
+                                                 Unigine::Math::dvec2              brush_size,
+                                                 Unigine::MaterialPtr              brush_material)
+{
+    auto calculate_direction = [](Unigine::Math::dvec3 x1, Unigine::Math::dvec3 x2)
+    {
+        double delta_x   = x2.x - x1.x;
+        double delta_y   = x2.y - x1.y;
+        double angle_rad = std::atan2(delta_y, delta_x);
+        double angle_deg = angle_rad * 180 / M_PI;
+        return angle_deg;
+    };
+
+    double brush_rotation = 0;
+    for (int i = 0; i < vertices.size(); i++)
+    {
+        auto v = vertices[i];
+
+        if (i != vertices.size() - 1)
+        {
+            auto v1        = vertices[i + 1];
+            brush_rotation = calculate_direction(v, v1) + 90;
+        }
+
+        Unigine::Log::message(std::to_string(brush_rotation).c_str());
+        Unigine::Log::message("\n");
+        RaiseTerrainToVertex(v, brush_size, brush_material, brush_rotation);
+    }
+}
+
+void terrain_manipulator::RaiseTerrainToVertices(std::vector<std::pair<Unigine::Math::dvec3, double>> vertices_and_rotations,
+                                                 Unigine::Math::dvec2 brush_size,
+                                                 Unigine::MaterialPtr brush_material)
+{
+    for (const auto& [vert, rotation] : vertices_and_rotations)
+    {
+        RaiseTerrainToVertex(vert, brush_size, brush_material, rotation);
+    }
+}
+
+void terrain_manipulator::SmoothTerrainAtVertices(std::vector<std::pair<Unigine::Math::dvec3, double>> vertices_and_rotations,
+                                                  Unigine::Math::dvec2 brush_size,
+                                                  Unigine::MaterialPtr brush_material)
+{
+    for (const auto& [vert, rotation] : vertices_and_rotations)
+    {
+        SmoothTerrainAtVertex(vert, brush_size, brush_material, rotation);
+    }
+}
+
+void terrain_manipulator::RaiseTerrainToVertex(Unigine::Math::dvec3          vertex,
+                                               Unigine::Math::dvec2          brush_size,
+                                               Unigine::MaterialPtr          brush_material,
+                                               float                         brush_rotation,
+                                               Unigine::LandscapeLayerMapPtr map_to_operate)
+{
+    if (!TerrainTestFetchAtPosition(Unigine::Math::dvec2{vertex.x, vertex.y}))
+        return;
+
+    ObjectLandscapeTerrainPtr terrain{Landscape::getActiveTerrain()};
+    const auto                d_position = Unigine::Math::dvec3(vertex);
+
+    auto closest_lmap = GetClosestLandscapeLayerMap(terrain, d_position);
+    if (map_to_operate)
+        closest_lmap = map_to_operate;
+    if (!closest_lmap)
+        return;
+
+    // Calculating the bound of the layer map area to be affected by the brush
+    auto brush_local_position = closest_lmap->getIWorldTransform() * d_position;
+
+    quat brush_world_rotation = quat(vec3_up, brush_rotation);
+    quat brush_local_rotation = brush_world_rotation * inverse(closest_lmap->getWorldRotation());
+
+    auto half_size = brush_size / 2.0f;
+
+    ivec2 drawing_region_coord;
+    ivec2 drawing_region_size;
+    CalculateDrawingRegion(brush_local_position, brush_local_rotation, half_size, closest_lmap, drawing_region_coord, drawing_region_size);
+
+    // Calculating the number of pixels per unit length
+    auto pixels_per_unit = Vec2{closest_lmap->getResolution()} / Vec2{closest_lmap->getSize()};
+
+    // calculating the coordinates and the size of the region or the landscape layer texture to be modified
+    auto pixel_coord = ivec2{pixels_per_unit * Vec2(brush_local_position)};
+
+    Unigine::Log::message("raising object at tile location (%g, %g) pixel coord (%d, %d), drawing coord (%d, %d) size (%d %d)\n",
+                          brush_local_position.x,
+                          brush_local_position.y,
+                          pixel_coord.x,
+                          pixel_coord.y,
+                          drawing_region_coord.x,
+                          drawing_region_coord.y,
+                          drawing_region_size.x,
+                          drawing_region_size.y);
+
+    // Create and populate our brush data, push it into our brush buffer queue.
+    BrushOperationData data;
+    data.brush_height      = static_cast<float>(vertex.z);
+    data.brush_size        = static_cast<float>(max(drawing_region_size.x, drawing_region_size.y));
+    data.brush_opacity     = 1;
+    data.height_blend_mode = HeightBlendMode::Alpha;
+    data.brush_material    = brush_material;
+    data.brush_rotation    = brush_rotation;
+    data.modify_heights    = true;
+
+    m_brush_buffer.push(data);
+
+    PerformTerrainManipulationOperation(closest_lmap, drawing_region_coord, drawing_region_size);
+
+    // If the brush operation overfills this terrain chunk, we'll need to create a new operation to handle the secondary
+    // chunk. we avoid calling back in to the first one by checking if we were given an lmap to operate on. but what
+    // happens if we are at the intersection of 4 tiles?
+    auto max_x = closest_lmap->getSize().x - drawing_region_size.x;
+    auto max_y = closest_lmap->getSize().y - drawing_region_size.y;
+    if ((drawing_region_coord.x <= 0 || drawing_region_coord.x >= max_x || drawing_region_coord.y <= 0 ||
+         drawing_region_coord.y >= max_y) &&
+        map_to_operate == nullptr)
+    {
+        auto current_lmap_position     = closest_lmap->getWorldPosition();
+        auto drawing_coord_world_space = dvec3();
+        drawing_coord_world_space.x    = drawing_region_coord.x <= 0
+                                           ? current_lmap_position.x + drawing_region_coord.x
+                                           : current_lmap_position.x + drawing_region_coord.x + drawing_region_size.x;
+        drawing_coord_world_space.y    = drawing_region_coord.y <= 0
+                                           ? current_lmap_position.y + drawing_region_coord.y
+                                           : current_lmap_position.y + drawing_region_coord.y + drawing_region_size.y;
+        drawing_coord_world_space.z    = d_position.z;
+
+        auto operation_lmap = GetClosestLandscapeLayerMap(terrain, drawing_coord_world_space);
+
+        if (operation_lmap == closest_lmap || map_to_operate == operation_lmap)
+            return;
+
+        RaiseTerrainToVertex(vertex, brush_size, brush_material, brush_rotation, operation_lmap);
+    }
+}
+
+void terrain_manipulator::SmoothTerrainAtVertex(Unigine::Math::dvec3          vertex,
+                                                Unigine::Math::dvec2          brush_size,
+                                                Unigine::MaterialPtr          brush_material,
+                                                float                         brush_rotation,
+                                                Unigine::LandscapeLayerMapPtr map_to_operate)
+{
+    if (!TerrainTestFetchAtPosition(Unigine::Math::dvec2{vertex.x, vertex.y}))
+        return;
+
+    ObjectLandscapeTerrainPtr terrain{Landscape::getActiveTerrain()};
+    const auto                d_position = Unigine::Math::dvec3(vertex);
+
+    auto closest_lmap = GetClosestLandscapeLayerMap(terrain, d_position);
+    if (!closest_lmap)
+        return;
+
+    // Calculating the bound of the layer map area to be affected by the brush
+    auto brush_local_position = closest_lmap->getIWorldTransform() * d_position;
+    auto half_size            = brush_size / 2.0f;
+
+    quat brush_world_rotation = quat(vec3_up, brush_rotation);
+    quat brush_local_rotation = brush_world_rotation * inverse(closest_lmap->getWorldRotation());
+
+    ivec2 drawing_region_coord;
+    ivec2 drawing_region_size;
+    CalculateDrawingRegion(brush_local_position, brush_local_rotation, half_size, closest_lmap, drawing_region_coord, drawing_region_size);
+
+    auto max_x = closest_lmap->getSize().x - drawing_region_size.x;
+    auto max_y = closest_lmap->getSize().y - drawing_region_size.y;
+    if (drawing_region_coord.x <= 0 || drawing_region_coord.x >= max_x || drawing_region_coord.y <= 0 ||
+        drawing_region_coord.y >= max_y)
+    {
+        // If we are too close to the Terrain chunk's border, return. As performing
+        // this operation in this location can cause the Terrain to break.
+        // As it is smoothing between a nothing value, because no terrain exists there.
+        return;
+    }
+
+    // Create and populate our brush data, push it into our brush buffer queue.
+    BrushOperationData data;
+    data.brush_height      = static_cast<float>(vertex.z);
+    data.brush_size        = static_cast<float>(brush_size.x);
+    data.brush_opacity     = 1;
+    data.height_blend_mode = HeightBlendMode::Alpha;
+    data.brush_material    = brush_material;
+    data.brush_rotation    = brush_rotation;
+    data.modify_heights    = true;
+
+    m_brush_buffer.push(data);
+
+    PerformTerrainManipulationOperation(closest_lmap, drawing_region_coord, drawing_region_size);
+}
+
+void terrain_manipulator::CalculateDrawingRegion(Unigine::Math::dvec3          brush_local_position,
+                                                 Unigine::Math::quat           brush_local_rotation,
+                                                 Unigine::Math::dvec2          half_size,
+                                                 Unigine::LandscapeLayerMapPtr closest_lmap,
+                                                 Unigine::Math::ivec2&         drawing_region_coord,
+                                                 Unigine::Math::ivec2&         drawing_region_size)
+{
+    Vec3 brush_local_corners[4] = {brush_local_position + brush_local_rotation * Vec3(-half_size.x, -half_size.y, 0.0),
+                                   brush_local_position + brush_local_rotation * Vec3(half_size.x, -half_size.y, 0.0),
+                                   brush_local_position + brush_local_rotation * Vec3(-half_size.x, half_size.y, 0.0),
+                                   brush_local_position + brush_local_rotation * Vec3(half_size.x, half_size.y, 0.0)};
+    auto brush_local_bbox_min   = Vec2{
+      min(min(brush_local_corners[0].x, brush_local_corners[1].x), min(brush_local_corners[2].x, brush_local_corners[3].x)),
+      min(min(brush_local_corners[0].y, brush_local_corners[1].y), min(brush_local_corners[2].y, brush_local_corners[3].y))};
+    auto brush_local_bbox_max = Vec2{
+      max(max(brush_local_corners[0].x, brush_local_corners[1].x), max(brush_local_corners[2].x, brush_local_corners[3].x)),
+      max(max(brush_local_corners[0].y, brush_local_corners[1].y), max(brush_local_corners[2].y, brush_local_corners[3].y))};
+
+    // Calculating the number of pixels per unit length
+    auto pixels_per_unit = Vec2{closest_lmap->getResolution()} / Vec2{closest_lmap->getSize()};
+
+    // calculating the coordinates and the size of the region or the landscape layer texture to be modified
+    drawing_region_coord = ivec2{round(pixels_per_unit * brush_local_bbox_min)};
+    drawing_region_size  = ivec2{pixels_per_unit * round((brush_local_bbox_max - brush_local_bbox_min))};
+}
+
+void terrain_manipulator::PerformTerrainManipulationOperation(Unigine::LandscapeLayerMapPtr lmap,
+                                                              Unigine::Math::ivec2          pixel_coord,
+                                                              Unigine::Math::ivec2          resolution)
+{
+    // Generate a new ID for the draw operation
+    // and send call our asyncTextureDraw function with our given inputs.
+    // TODO: should probably have configurable data flags, as we only want height with some ops and only albedo on
+    // others.
+    int id = Landscape::generateOperationID();
+    Landscape::asyncTextureDraw(id, lmap->getGUID(), pixel_coord, resolution, Landscape::FLAGS_DATA_HEIGHT | Landscape::FLAGS_DATA_ALBEDO);
+}
+
+void terrain_manipulator::OnTextureDraw(Unigine::UGUID guid, int id, Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord, int data_mask)
+{
+    if (NumberOfRemainingOperations() == 0)
+    {
+        Unigine::Log::message("No data to process, exiting terrain sculpt\n");
+        m_in_progress = false;
+        return;
+    }
+
+    m_in_progress = true;
+
+    // An external process is blocking the application of brushes
+    if (m_operations_blocked)
+        return;
+
+    // Brush operations are cocneptually the same, but right now they are to be managed differently
+    // First we check the classic brush operations
+    if (m_brush_buffer.size() > 0)
+    {
+        BrushOperationData operation = m_brush_buffer.front();
+        m_brush_buffer.pop();
+
+        ApplyBrush(operation, guid, id, buffer, coord, data_mask);
+    }
+
+    if (NumberOfRemainingOperations() == 0)
+    {
+        Unigine::Log::message("Finished Terrain Sculpting\n");
+        m_in_progress = false;
+    }
+}
+
+void terrain_manipulator::ApplyBrush(BrushOperationData const&     operation,
+                                     Unigine::UGUID                guid,
+                                     int                           id,
+                                     Unigine::LandscapeTexturesPtr buffer,
+                                     Unigine::Math::ivec2          coord,
+                                     int                           data_mask)
+{
+    auto brush_material = operation.brush_material;
+
+    if (operation.modify_albedo)
+    {
+        // setting necessary textures (e.g., albedo and heights)
+        // this is the current terrain data from our drawing area
+        brush_material->setTexture("terrain_albedo", buffer->getAlbedo());
+    }
+
+    if (m_brush_buffer.size() == 0)
+    {
+        Unigine::Log::message("Finished Terrain Painting\n");
+    }
+
+    // setting necessary textures (e.g., albedo and heights)
+    if (operation.modify_heights)
+    {
+        // setting necessary textures (e.g., albedo and heights)
+        // this is the current terrain data from our drawing area
+        brush_material->setTexture("terrain_height", buffer->getHeight());
+    }
+
+    // setting up brush material parameters (size, color, etc. and specifying masks to be affected by the brush)
+    brush_material->setParameterFloat("size", operation.brush_size);
+    brush_material->setParameterFloat("height", operation.brush_height);
+    brush_material->setParameterFloat("angle", operation.brush_rotation);
+    brush_material->setParameterFloat("opacity", operation.brush_opacity);
+    brush_material->setParameterInt("data_mask", data_mask);
+    brush_material->setState("height_blend_mode", static_cast<int>(operation.height_blend_mode));
+
+    // running material's "brush" expression
+    brush_material->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+
+    // resetting material textures
+    brush_material->setTexture("terrain_height", nullptr);
+    // resetting material textures
+    brush_material->setTexture("terrain_albedo", nullptr);
+}
+
+Unigine::MaterialPtr terrain_manipulator::getCircularTerrainBrushWithFalloff(double falloff, double padding, std::string DEFAULT)
+{
+    auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(DEFAULT.c_str()));
+    if (!file_guid.isValid())
+    {
+        Log::warning("Can not find DEFAULT brush material\n");
+        return nullptr;
+    }
+
+    auto brush_material = Unigine::Materials::findMaterialByFileGUID(file_guid)->inherit();
+
+    ImagePtr image = Image::create();
+
+    // Set the size of the texture (e.g., 512x512)
+    int width  = 512;
+    int height = 512;
+    image->create2D(width, height, Unigine::Image::FORMAT_RGBA8);
+
+    float FALLOFF_AS_RATIO = Math::clamp(falloff, 0.0, 1.0);
+
+    // Define the center and radius of the circle
+    int   centerX = width / 2;
+    int   centerY = height / 2;
+    float radius  = (width - padding * width) / 2;
+
+    Unigine::Image::Pixel pix;
+    pix.i.r = 255;
+    pix.i.g = 255;
+    pix.i.b = 255;
+    pix.i.a = 255;
+
+    // Define the lambda function for calculating the percentage
+    auto calculatePercentage = [=](float x1, float x2, float y1)
+    {
+        // Calculate the distance between x1 and x2
+        float totalDistance = x2 - x1;
+
+        // Calculate the distance between x1 and y1
+        float yDistance = y1 - x1;
+
+        // Calculate the percentage
+        float percentage = (yDistance / totalDistance);
+
+        return percentage;
+    };
+
+    // Iterate through each pixel and set alpha based on distance from center
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            float distance_to_center = sqrt((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY));
+
+            // Outside of the circles radius, set alpha to 0.
+            if (distance_to_center > radius)
+            {
+                pix.i.a = 0;
+                image->set2D(x, y, pix);
+                continue;
+            }
+            float to_radius_ratio = calculatePercentage(0, radius, distance_to_center);
+            if (to_radius_ratio < FALLOFF_AS_RATIO)
+            {
+                pix.i.a = 255;
+                image->set2D(x, y, pix);
+                continue;
+            }
+
+            auto falloff_distance             = radius * FALLOFF_AS_RATIO;
+            auto falloff_to_radius_ratio      = calculatePercentage(falloff_distance, radius, distance_to_center);
+            auto inverse_falloff_radius_ratio = (1 - falloff_to_radius_ratio);
+
+            float alpha = 255.0f * inverse_falloff_radius_ratio;
+
+            // Convert alpha to the range [0, 255]
+            int alpha_int = static_cast<int>(alpha);
+            alpha_int     = Unigine::Math::clamp(alpha_int, 0, 255);
+
+            pix.i.a = alpha_int;
+            image->set2D(x, y, pix);
+        }
+    }
+    UGUID gui = UGUID();
+    gui.generate();
+
+    std::stringstream name_ss;
+    name_ss << TEMP_FOLDER;
+    name_ss << gui.makeString().get();
+    name_ss << IMAGE_EXTENSTION;
+
+    image->save(name_ss.str().c_str());
+    brush_material->setTexturePath("opacity", name_ss.str().c_str());
+
+    return brush_material;
+}
+
+Unigine::MaterialPtr terrain_manipulator::getTerrainTileBrush(Unigine::ImagePtr height_image)
+{
+    // the api on our brush is specific to the material, so does not make much sense to make this configurable
+    // this brush is a copy of the editor base brush but with contrast disabled (which avoids a clamping the colour
+    // causing loss of negative values)
+    std::string base_brush_mat_name = "brush_without_contrast.basebrush";
+
+    auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(base_brush_mat_name.c_str()));
+    if (!file_guid.isValid())
+    {
+        Log::warning("Could not find brush material needed to perform terrain modification: %s\n", base_brush_mat_name.c_str());
+        return nullptr;
+    }
+
+    auto brush_material = Unigine::Materials::findMaterialByFileGUID(file_guid)->inherit();
+
+    // the new height data goes into the "opacity" texture
+    auto height_texture_index = brush_material->findTexture("opacity");
+    brush_material->setTextureImage(height_texture_index, height_image);
+
+    return brush_material;
+}
+
+// TODO: make the brush material getter common?
+Unigine::MaterialPtr terrain_manipulator::getTerrainTileBrush(Unigine::TexturePtr height_texture)
+{
+    // the api on our brush is specific to the material, so does not make much sense to make this configurable
+    // this brush is a copy of the editor base brush but with contrast disabled (which avoids a clamping the colour
+    // causing loss of negative values)
+    std::string base_brush_mat_name = "brush_without_contrast.basebrush";
+
+    auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(base_brush_mat_name.c_str()));
+    if (!file_guid.isValid())
+    {
+        Log::warning("Could not find brush material needed to perform terrain modification: %s\n", base_brush_mat_name);
+        return nullptr;
+    }
+
+    auto brush_material = Unigine::Materials::findMaterialByFileGUID(file_guid)->inherit();
+
+    // the new height data goes into the "opacity" texture
+    auto height_texture_index = brush_material->findTexture("opacity");
+    brush_material->setTexture(height_texture_index, height_texture);
+
+    return brush_material;
+}
+
+Unigine::MaterialPtr terrain_manipulator::getSquareTerrainBrushWithFalloff(double falloff, int inner_size, std::string DEFAULT)
+{
+    auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(DEFAULT.c_str()));
+    if (!file_guid.isValid())
+    {
+        Log::warning("Can not find DEFAULT brush material\n");
+        return nullptr;
+    }
+
+    auto brush_material = Unigine::Materials::findMaterialByFileGUID(file_guid)->inherit();
+
+    ImagePtr image = Image::create();
+
+    // Set the size of the texture (e.g., 512x512)
+    int width  = 512;
+    int height = 512;
+    image->create2D(width, height, Unigine::Image::FORMAT_RGBA8);
+
+    float FALLOFF_AS_RATIO = Math::clamp(falloff, 0.0, 1.0);
+
+    // Define the center and radius of the circle
+    int centerX = width / 2;
+    int centerY = height / 2;
+
+    Unigine::Image::Pixel pix;
+    pix.i.r = 255;
+    pix.i.g = 255;
+    pix.i.b = 255;
+    pix.i.a = 255;
+
+    // Define the lambda function for calculating the percentage
+    auto calculatePercentage = [=](float x1, float x2, float y1)
+    {
+        // Calculate the distance between x1 and x2
+        float totalDistance = x2 - x1;
+
+        // Calculate the distance between x1 and y1
+        float yDistance = y1 - x1;
+
+        // Calculate the percentage
+        float percentage = (yDistance / totalDistance);
+
+        return percentage;
+    };
+
+    // Iterate through each pixel and set alpha based on distance from center
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            if (y > centerY + inner_size || y < centerY - inner_size)
+            {
+                pix.i.a = 0;
+                image->set2D(x, y, pix);
+                continue;
+            }
+
+            float distance_to_center_x = std::abs(x - centerX);
+
+            float edge_ratio = calculatePercentage(0, centerX, distance_to_center_x);
+            if (edge_ratio < FALLOFF_AS_RATIO)
+            {
+                pix.i.a = 255;
+                image->set2D(x, y, pix);
+                continue;
+            }
+
+            auto falloff_distance = x > centerX ? centerX + (centerX * FALLOFF_AS_RATIO) : centerX - (centerX * FALLOFF_AS_RATIO);
+
+            auto falloff_to_radius_ratio      = x > centerX ? calculatePercentage(falloff_distance, width, x)
+                                                            : calculatePercentage(falloff_distance, 0, x);
+            auto inverse_falloff_radius_ratio = (1 - falloff_to_radius_ratio);
+
+            float alpha = 255.0f * inverse_falloff_radius_ratio;
+
+            // Convert alpha to the range [0, 255]
+            int alpha_int = static_cast<int>(alpha);
+            alpha_int     = Unigine::Math::clamp(alpha_int, 0, 255);
+
+            pix.i.a = alpha_int;
+            image->set2D(x, y, pix);
+        }
+    }
+    UGUID gui = UGUID();
+    gui.generate();
+
+    std::stringstream name_ss;
+    name_ss << TEMP_FOLDER;
+    name_ss << gui.makeString().get();
+    name_ss << IMAGE_EXTENSTION;
+
+    image->save(name_ss.str().c_str());
+    brush_material->setTexturePath("opacity", name_ss.str().c_str());
+
+    return brush_material;
+}

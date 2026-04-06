@@ -1,0 +1,253 @@
+#pragma once
+
+#include <cassert>
+#include <string>
+#include <vector>
+#include <regex>
+
+#include <UnigineMathLib.h>
+#include <UnigineObjects.h>
+#include <UnigineNodes.h>
+#include <UnigineLog.h>
+
+#include "object_mesh_helper.h"
+
+/// Recursive helper function that need only be called by the parent function
+/// This function does all of the hard work.
+void flattenToObjectList(Unigine::NodePtr node, std::vector<Unigine::ObjectPtr> &out_objects)
+{
+    if(!node)
+        return;
+
+    if (node->getType() == Unigine::Node::OBJECT_MESH_DYNAMIC || node->getType() == Unigine::Node::OBJECT_MESH_STATIC)
+        out_objects.push_back(Unigine::checked_ptr_cast<Unigine::Object>(node));
+    else if (node->getType() == Unigine::Node::NODE_REFERENCE)
+    {
+        Unigine::NodeReferencePtr nodeRef = Unigine::checked_ptr_cast<Unigine::NodeReference>(node);
+        auto target = nodeRef->getReference();
+
+        if (target->isValid())
+            flattenToObjectList(target, out_objects);
+        else
+            Unigine::Log::warning("Whilst flattening object list NULL reference node found under node %s. Node not processed\n", nodeRef->getName());
+    }
+
+    for (int i = 0; i < node->getNumChildren(); i++)
+        flattenToObjectList(node->getChild(i), out_objects);
+    return;
+}
+
+
+/// Iterates over the given list of Nodes, processing each Nodes child recursively.
+/// Only Nodes that are ObjectMeshStatic or ObjectMeshDynamic are added to the vector that
+/// is returned. This way, entire hierarchies of Nodes are processed and only the
+/// children that are Objects end up being returned.
+///
+/// @param nodes The list of Nodes to flatten and filter.
+///
+/// @return The vector of Objects that have been flattened.
+
+std::vector<Unigine::ObjectPtr> flattenToObjectList(std::vector<Unigine::NodePtr> nodes)
+{
+
+    // Call flattenToObjectList for each Node in the passed node list.
+    std::vector<Unigine::ObjectPtr> out_objects;
+    for (const auto &node : nodes)
+        flattenToObjectList(node, out_objects);
+
+    return out_objects;
+}
+
+
+/// Returns the number vertices for all the triangles that make up a
+/// base surface in an ObjectMeshStatic or ObjectMeshDynamic object.
+///
+/// @param object_surface
+///        Object and surface index
+/// @param append_vertices_world_space
+///        Output vector. Triangles are stored as three consecutive dvec3s,
+///        in world coordinates.
+size_t appendBaseVerts(ObjectSurface const& object_surface, std::vector<Unigine::Math::dvec3>& append_vertices_world_space)
+{
+    using namespace Unigine;
+    using namespace Unigine::Math;
+
+    dmat4 world_transform = object_surface.first->getWorldTransform();
+
+    auto object = object_surface.first;
+    auto surface_index = object_surface.second;
+
+    switch (object->getType())
+    {
+    case Node::OBJECT_MESH_STATIC:
+    {
+        ObjectMeshStaticPtr object_mesh_static = dynamic_ptr_cast<ObjectMeshStatic>(object);
+        if (object_mesh_static->isValid())
+        {
+            MeshPtr mesh_static = object_mesh_static->getMeshForceRAM();
+            if (mesh_static->isValid())
+            {
+                /*Vector<int> const& vertex_indices = mesh_static->getCIndices(surface_index);
+                for (int const& vertex_index : vertex_indices)
+                {
+                    vec3 vertex_object_space = mesh_static->getVertex(vertex_index, surface_index);
+                    dvec3 vertex_world_space = world_transform * dvec3(vertex_object_space);
+                    vertices_world_space.push_back(vertex_world_space);
+                }*/
+
+                Vector<int> const& vertex_indices = mesh_static->getCIndices(surface_index);
+                Vector<vec3> const& vertices_object_space = mesh_static->getVertices(surface_index);
+                assert((vertex_indices.size() % 3) == 0); // sanity check
+                for (int vertex_index : vertex_indices)
+                {
+                    vec3 const& vertex_object_space = vertices_object_space[vertex_index];
+                    dvec3 vertex_world_space = world_transform * dvec3(vertex_object_space);
+                    append_vertices_world_space.push_back(vertex_world_space);
+                }
+            }
+        }
+        break;
+    }
+    case Node::OBJECT_MESH_DYNAMIC:
+    {
+        ObjectMeshDynamicPtr dynamic_mesh = dynamic_ptr_cast<ObjectMeshDynamic>(object);
+
+        /*int const triangle_start = dynamic_mesh->getSurfaceBegin(surface_index);
+        int const triangle_end = dynamic_mesh->getSurfaceEnd(surface_index);
+        for (int triangle_index = triangle_start; triangle_index < triangle_end; triangle_index++)
+        {
+            int vertex_index = triangle_index * 3;
+
+            vertices_world_space.push_back(world_transform * dvec3(dynamic_mesh->getVertex(dynamic_mesh->getIndex(vertex_index + 0))));
+            vertices_world_space.push_back(world_transform * dvec3(dynamic_mesh->getVertex(dynamic_mesh->getIndex(vertex_index + 1))));
+            vertices_world_space.push_back(world_transform * dvec3(dynamic_mesh->getVertex(dynamic_mesh->getIndex(vertex_index + 2))));
+        }*/
+
+        const int* dynamic_mesh_indices = dynamic_mesh->getIndicesArray();
+        const ObjectMeshDynamic::Vertex * dynamic_mesh_vertices = dynamic_mesh->getVertexArray();
+
+        int const triangle_start = dynamic_mesh->getSurfaceBegin(surface_index);
+        int const triangle_end = dynamic_mesh->getSurfaceEnd(surface_index);
+        int const vertex_start = triangle_start * 3;
+        int const vertex_end = triangle_end * 3;
+        int vertex_index = vertex_start;
+        while (vertex_index < vertex_start)
+        {
+            int index_a = dynamic_mesh_indices[vertex_index++];
+            int index_b = dynamic_mesh_indices[vertex_index++];
+            int index_c = dynamic_mesh_indices[vertex_index++];
+
+            vec3 const& vertex_a_object_space = dynamic_mesh_vertices[index_a].xyz;
+            vec3 const& vertex_b_object_space = dynamic_mesh_vertices[index_b].xyz;
+            vec3 const& vertex_c_object_space = dynamic_mesh_vertices[index_c].xyz;
+
+            dvec3 triangle_world_space[3] = {
+                world_transform * dvec3(vertex_a_object_space),
+                world_transform * dvec3(vertex_b_object_space),
+                world_transform * dvec3(vertex_c_object_space)
+            };
+
+            append_vertices_world_space.insert(append_vertices_world_space.begin(), triangle_world_space, triangle_world_space + 3);
+        }
+
+        break;
+    }
+    }
+
+    assert((append_vertices_world_space.size() % 3) == 0); // sanity check
+    return append_vertices_world_space.size();
+}
+
+
+/// Returns the first surface of a mesh which has a name that matches the given regex
+///
+/// @param Object              The object.
+/// @param surface_name_regex  The name regular expression to match
+/// @return                    Index of the surface if the given node contains a
+///                            such surface, NULL otherwise.
+ObjectSurface getBaseSurface(Unigine::ObjectPtr object, std::regex surface_name_regex)
+{
+    int size = object->getNumSurfaces();
+    for (int i = 0; i < size; i++)
+    {
+        std::string name = object->getSurfaceName(i);
+        if (std::regex_search(name, surface_name_regex))
+        {
+            return std::make_pair(object, i);
+        }
+    }
+    return std::make_pair(nullptr, 0);
+}
+
+
+/// Returns the first surface of a mesh that contains the given surface property
+///
+/// @param Object                   The object.
+/// @param target_surface_property  The surface property to look for
+/// @return                         Index of the surface if the given node contains a
+///                                 such surface, NULL otherwise.
+ObjectSurface getSurfaceWithProperty(Unigine::ObjectPtr object, Unigine::PropertyPtr target_surface_property)
+{
+    int size = object->getNumSurfaces();
+    for (int i = 0; i < size; i++)
+    {
+        auto surf_prop = object->getSurfaceProperty(i);
+        if (surf_prop)
+        {
+            if (strcmp(surf_prop->getName(), target_surface_property->getName()) == 0)
+            {
+                return std::make_pair(object, i);
+            }
+        }
+    }
+    return std::make_pair(nullptr, 0);
+}
+
+/// Given a list of Objects, this function will return only the Objects that have surfaces that
+/// match the given regular expression. The returned value is a vector of pairs where the first
+/// element is the matching Object and the second element is the surface id that matched the regular
+/// expression.
+////
+/// @param objects            The objects to process.
+/// @param surface_name_regex The regular expression to match against Object surface names.
+///
+/// @return                   A vector of pairs, where the first element is the matching Object and the second element is
+///                           the matching surface.
+
+std::vector<ObjectSurface> filterMatchingObjects(std::vector<Unigine::ObjectPtr> objects, std::regex surface_name_regex)
+{
+    std::vector<ObjectSurface> candidate_pairs;
+    for (auto object : objects)
+    {
+        // Match the surface - if it matches, append to the return value vector.
+        auto surface = getBaseSurface(object, surface_name_regex);
+        if (surface.first)
+            candidate_pairs.push_back(surface);
+    }
+    return candidate_pairs;
+}
+
+/// Given a list of Objects, this function will return only the Objects that have surfaces that
+/// have the provided property assigned. The returned value is a vector of pairs where the first
+/// element is the matching Object and the second element is the surface id that matched the regular
+/// expression.
+/// Only supports single surface with the property
+////
+/// @param objects                 The objects to process.
+/// @param target_surface_property The surface property to look for
+///
+/// @return                        A vector of pairs, where the first element is the matching Object and the second element is
+///                                the matching surface.
+
+std::vector<ObjectSurface> filterMatchingObjects(std::vector<Unigine::ObjectPtr> objects, Unigine::PropertyPtr target_surface_property)
+{
+    std::vector<ObjectSurface> candidate_pairs;
+    for (auto object : objects)
+    {
+        // Match the surface - if it matches, append to the return value vector.
+        auto surface = getSurfaceWithProperty(object, target_surface_property);
+        if (surface.first)
+            candidate_pairs.push_back(surface);
+    }
+    return candidate_pairs;
+}
