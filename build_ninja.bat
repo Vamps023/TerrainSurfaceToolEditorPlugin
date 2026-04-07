@@ -7,12 +7,14 @@ REM Set paths
 set PROJECT_ROOT=%~dp0
 set BUILD_DIR=%PROJECT_ROOT%build
 set DEPLOY_DIR=C:\Users\snare.ext\Documents\UNIGINE Projects\unigine_project_3\bin\plugins\Vamps\TerrainSurfaceTool
+set PROJECT_DATA_DIR=C:\Users\snare.ext\Documents\UNIGINE Projects\unigine_project_3\data
 set TARGET_NAME=TerrainSurfaceTool
 set BINARY_NAME=%TARGET_NAME%_editorplugin_double_x64
 
 echo Project Root: %PROJECT_ROOT%
 echo Build Dir: %BUILD_DIR%
 echo Deploy Dir: %DEPLOY_DIR%
+echo Project Data Dir: %PROJECT_DATA_DIR%
 echo Target Name: %TARGET_NAME%
 echo Binary Name: %BINARY_NAME%
 echo.
@@ -20,10 +22,13 @@ echo.
 REM Create build directory
 if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
+if not exist "%PROJECT_DATA_DIR%" mkdir "%PROJECT_DATA_DIR%"
 
 REM Copy plugin metadata
 echo Copying plugin metadata...
 copy "%PROJECT_ROOT%source\TerrainSurfaceToolEditorPlugin.json" "%DEPLOY_DIR%\" >nul 2>&1
+echo Copying plugin content assets...
+copy "%PROJECT_ROOT%Content\*.basebrush" "%PROJECT_DATA_DIR%\" >nul 2>&1
 
 REM Setup VS2022 Developer Command Prompt
 echo Setting up VS2022 Developer Command Prompt...
@@ -88,11 +93,20 @@ if exist "%DEPLOY_DIR%\TerrainSurfaceToolEditorPlugin.json" (
 
 echo.
 echo === Build Complete ===
+if exist "%PROJECT_DATA_DIR%\terrain_brush_r32f_overwrite.basebrush" (
+    echo Brush assets deployed to %PROJECT_DATA_DIR%
+) else (
+    echo Brush assets not found in %PROJECT_DATA_DIR%
+)
 echo.
 echo Plugin Structure (GantryLabelTool Pattern):
 echo %DEPLOY_DIR%
 echo ├── %BINARY_NAME%.dll
 echo └── TerrainSurfaceToolEditorPlugin.json
+echo.
+echo Project Data Assets:
+echo %PROJECT_DATA_DIR%
+echo terrain_brush_r32f_overwrite.basebrush
 echo.
 echo To use the plugin:
 echo 1. Start Unigine Editor2

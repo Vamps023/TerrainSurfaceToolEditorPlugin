@@ -90,6 +90,8 @@ public:
         HeightBlendMode      height_blend_mode = HeightBlendMode::Alpha;
         bool                 modify_heights = false;
         bool                 modify_albedo = false;
+        bool                 modify_mask = false;
+        int                  mask_index = 0;
     };
 
     // Public terrain operations
@@ -105,7 +107,7 @@ public:
     bool SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
 
     // Mask image operations
-    bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::NodePtr node, Unigine::ImagePtr mask_image, Unigine::Math::dvec2 brush_size);
+    bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::NodePtr node, Unigine::ImagePtr mask_image, Unigine::Math::dvec2 brush_size, int mask_index);
     void SetTerrainAlbedoImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
                                    Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
                                    int data_mask, Unigine::ImagePtr albedo_image);
@@ -119,6 +121,7 @@ public:
     static Unigine::MaterialPtr getCircularTerrainBrushWithFalloff(double falloff, double padding = 0,
                                     std::string DEFAULT = "circle_medium.brush");
     static Unigine::MaterialPtr getTerrainTileBrush(Unigine::ImagePtr height_image);
+    static Unigine::MaterialPtr getMaskTerrainBrush(Unigine::ImagePtr mask_image);
 
 private:
     void RaiseTerrainToVertex(Unigine::Math::dvec3 vertex, Unigine::Math::dvec2 brush_size,
@@ -135,7 +138,8 @@ private:
 
     void PerformTerrainManipulationOperation(Unigine::LandscapeLayerMapPtr lmap,
                                              Unigine::Math::ivec2 pixel_coord,
-                                             Unigine::Math::ivec2 resolution);
+                                             Unigine::Math::ivec2 resolution,
+                                             int flags);
 
     void OnTextureDraw(Unigine::UGUID guid, int id, Unigine::LandscapeTexturesPtr buffer,
                        Unigine::Math::ivec2 coord, int data_mask);

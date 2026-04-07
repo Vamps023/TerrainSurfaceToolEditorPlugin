@@ -1,0 +1,44 @@
+BaseBrushMaterial brush <var_prefix=var texture_prefix=tex>
+{
+	Texture2D terrain_mask <source=procedural shared=0>
+	Texture2D new_mask <source=procedural>
+
+	Pass brush_mask
+	{
+		Fragment=
+		#{
+			#define UNDEF_FRAGMENT_OUT
+			#include <core/materials/shaders/render/common.h>
+
+			STRUCT_FRAG_BEGIN
+				INIT_MRT(float, 0)
+			STRUCT_FRAG_END
+
+			MAIN_FRAG_BEGIN(FRAGMENT_IN)
+				int2 scr_coord = toInt2(IN_POSITION.xy);
+				float mask_value = TEXTURE_FETCH(tex_new_mask, scr_coord).x;
+				OUT_MRT(0) = mask_value;
+			MAIN_FRAG_END
+		#}
+	}
+
+	Expression brush =
+	#{
+		RenderTarget render_target = engine.render.getTemporaryRenderTarget();
+		render_target.unbindAll();
+
+		if (getTexture("terrain_mask") != NULL)
+		{
+			Texture tex_terrain_mask = getTexture("terrain_mask");
+			render_target.bindColorTexture(0, tex_terrain_mask);
+			render_target.enable();
+			{
+				renderPass("brush_mask");
+			}
+			render_target.disable();
+			render_target.unbindAll();
+		}
+
+		engine.render.releaseTemporaryRenderTarget(render_target);
+	#}
+}
