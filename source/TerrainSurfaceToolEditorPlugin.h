@@ -44,6 +44,7 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QScrollBar>
 #include <UnigineMeshStatic.h>
 
@@ -101,6 +102,10 @@ public:
 
     // Height image operations
     bool SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
+
+    // Mask/albedo painting operations
+    bool PaintTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr mask_image,
+                          float opacity = 1.0f);
 
     // Status
     bool   IsTerrainManipulationInProgress() const;
@@ -199,10 +204,13 @@ private slots:
     void onApplyPullTerrain();
     void onSmoothTerrain();
     void onResetTerrainHeight();
+    void onApplyPaintMask();
+    void onRefreshMaskList();
 
 private:
     void setupUI();
     void updateSelectionStatus();
+    void populateMaskDropdown();
     void logMessage(const QString& msg);
 
     UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin_;
@@ -224,6 +232,13 @@ private:
     QPushButton* btn_apply_;
     QPushButton* btn_smooth_;
     QPushButton* btn_reset_;
+
+    // Mask paint controls
+    QComboBox*      combo_mask_name_;
+    QDoubleSpinBox* spin_paint_opacity_;
+    QDoubleSpinBox* spin_paint_hardness_;
+    QPushButton*    btn_paint_mask_;
+    QPushButton*    btn_refresh_masks_;
 
     // Progress & log
     QProgressBar* progress_bar_;
