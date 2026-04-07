@@ -8,8 +8,6 @@
 
 #define _USE_MATH_DEFINES
 #include "TerrainSurfaceToolEditorPlugin.h"
-#include <UnigineCallback.h>
-#include <UnigineRender.h>
 #include <math.h>
 #include <QtWidgets/QApplication>
 #include <QtGui/QPalette>
@@ -23,7 +21,13 @@ int getLandscapeMaskFlag(int mask_index)
 {
     if (mask_index < 0 || mask_index > 19)
         return 0;
-    return Landscape::FLAGS_DATA_MASK_0 << mask_index;
+    int flags = 0;
+    for (int mask_page = 0; mask_page < 5; ++mask_page)
+    {
+        flags |= (Landscape::FLAGS_FILE_DATA_MASK_0 << mask_page);
+        flags |= (Landscape::FLAGS_FILE_DATA_OPACITY_MASK_0 << mask_page);
+    }
+    return flags;
 }
 
 int round_up(int value, int round)
@@ -866,8 +870,8 @@ bool TerrainManipulator::SetTerrainMask(
         return false;
     }
 
-    Log::message("[TerrainManipulator] Mask painting: tile_res (%d x %d), mask_index (%d)\n",
-                 tile_res.x, tile_res.y, mask_index);
+    Log::message("[TerrainManipulator] Mask painting: tile_res (%d x %d), logical_mask (%d), page (%d)\n",
+                 tile_res.x, tile_res.y, mask_index, mask_index / 4);
 
     // Queue brush operation targeting the real landscape mask channel
     BrushOperationData data;
@@ -1024,32 +1028,37 @@ void TerrainManipulator::ApplyBrush(
     // ----------------------------------------------------------------
     if (operation.modify_mask)
     {
-        auto mask_texture = buffer->getMask(operation.mask_index);
-        if (!mask_texture)
+        int available_pages = 0;
+        for (int page_index = 0; page_index < 5; ++page_index)
         {
-            Log::warning("[TerrainManipulator] getMask(%d) returned null. "
-                         "Ensure the LandscapeLayerMap has mask slot %d configured.\n",
-                         operation.mask_index, operation.mask_index);
+            if (buffer->getMask(page_index) && buffer->getOpacityMask(page_index))
+                ++available_pages;
+        }
+        if (available_pages == 0)
+        {
+            Log::warning("[TerrainManipulator] Missing packed mask page textures for logical mask %d.\n",
+                         operation.mask_index);
             return;
         }
 
-        // Check if the brush material has a terrain_mask texture slot
-        auto mask_texture_index = brush_material->findTexture("terrain_mask");
-        if (mask_texture_index < 0)
+        for (int page_index = 0; page_index < 5; ++page_index)
         {
-            Log::warning("[TerrainManipulator] Brush material has no 'terrain_mask' texture slot. "
-                         "Mask painting requires a brush material that supports mask operations.\n");
-            return;
+            const std::string mask_name = "terrain_mask_" + std::to_string(page_index);
+            const std::string opacity_name = "terrain_opacity_mask_" + std::to_string(page_index);
+            brush_material->setTexture(mask_name.c_str(), buffer->getMask(page_index));
+            brush_material->setTexture(opacity_name.c_str(), buffer->getOpacityMask(page_index));
         }
-
-        // Bind the mask texture to the brush shader's "terrain_mask" slot
-        brush_material->setTexture(mask_texture_index, mask_texture);
+        const int logical_mask_bit = 1 << (operation.mask_index + 2);
         brush_material->setParameterFloat("size",    operation.brush_size);
         brush_material->setParameterFloat("angle",   operation.brush_rotation);
         brush_material->setParameterFloat("opacity", operation.brush_opacity);
-        brush_material->setParameterInt("data_mask", data_mask);
+        brush_material->setParameterInt("data_mask", logical_mask_bit);
+        brush_material->setState("data_mask", logical_mask_bit);
+        brush_material->setParameterInt("data_mask_opacity", logical_mask_bit);
+        brush_material->setState("data_mask_opacity", logical_mask_bit);
         brush_material->setState("height_blend_mode",
                                  static_cast<int>(operation.height_blend_mode));
+        brush_material->setState("masks_overide", 0);
 
         // Execute brush shader — writes result back into the mask texture
         brush_material->runExpression(
@@ -1057,8 +1066,13 @@ void TerrainManipulator::ApplyBrush(
             buffer->getResolution().x,
             buffer->getResolution().y);
 
-        // Unbind to avoid stale texture references
-        brush_material->setTexture(mask_texture_index, nullptr);
+        for (int page_index = 0; page_index < 5; ++page_index)
+        {
+            const std::string mask_name = "terrain_mask_" + std::to_string(page_index);
+            const std::string opacity_name = "terrain_opacity_mask_" + std::to_string(page_index);
+            brush_material->setTexture(mask_name.c_str(), nullptr);
+            brush_material->setTexture(opacity_name.c_str(), nullptr);
+        }
         return;
     }
 
@@ -1225,7 +1239,7 @@ MaterialPtr TerrainManipulator::getMaskTerrainBrush(ImagePtr mask_image)
     if (!mask_image)
         return nullptr;
 
-    const char* mask_brush_name = "terrain_brush_r32f_overwrite.basebrush";
+    const char* mask_brush_name = "editor2/brushes/brush.basebrush";
     auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(mask_brush_name));
 
     if (!file_guid.isValid())
@@ -1236,15 +1250,19 @@ MaterialPtr TerrainManipulator::getMaskTerrainBrush(ImagePtr mask_image)
 
     auto brush_material = Materials::findMaterialByFileGUID(file_guid)->inherit();
 
-    auto new_mask_texture_index = brush_material->findTexture("new_mask");
-    if (new_mask_texture_index < 0)
+    auto opacity_texture_index = brush_material->findTexture("opacity");
+    if (opacity_texture_index < 0)
     {
-        Log::warning("Mask brush material '%s' has no 'new_mask' texture slot\n",
+        Log::warning("Mask brush material '%s' has no 'opacity' texture slot\n",
                      mask_brush_name);
         return nullptr;
     }
 
-    brush_material->setTextureImage(new_mask_texture_index, mask_image);
+    brush_material->setTextureImage(opacity_texture_index, mask_image);
+    brush_material->setParameterFloat4("color", vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    brush_material->setParameterFloat("color_intensity", 1.0f);
+    brush_material->setParameterFloat("contrast", 0.0f);
+    brush_material->setState("masks_overide", 0);
     return brush_material;
 }
 
@@ -1425,12 +1443,23 @@ void UiPanelTerrain::setupUI()
     // so it targets the real Unigine landscape mask slot, not albedo
     auto* mask_group = new QGroupBox("Landscape Mask Slot", this);
     auto* mask_layout = new QHBoxLayout(mask_group);
-    mask_layout->addWidget(new QLabel("Mask Name:"));
-    edit_mask_name_ = new QLineEdit("mask_0", this);
-    edit_mask_name_->setToolTip(
-        "Landscape mask slot to paint. Format: mask_N (e.g. mask_0, mask_1).\n"
-        "This targets the real Unigine landscape mask channel, not albedo.");
-    mask_layout->addWidget(edit_mask_name_);
+    mask_layout->addWidget(new QLabel("Mask:"));
+    combo_mask_name_ = new QComboBox(this);
+    combo_mask_name_->setToolTip(
+        "Select the landscape mask slot to paint.\n"
+        "Mask 0-3 belong to mask_0 (R/G/B/A), mask 4-7 belong to mask_1, and so on.");
+    for (int mask_index = 0; mask_index < 20; ++mask_index)
+    {
+        const int mask_page = mask_index / 4;
+        const char mask_channel = "RGBA"[mask_index % 4];
+        combo_mask_name_->addItem(
+            QString("Mask %1  (mask_%2 / %3)")
+                .arg(mask_index)
+                .arg(mask_page)
+                .arg(QChar(mask_channel)),
+            mask_index);
+    }
+    mask_layout->addWidget(combo_mask_name_);
     main_layout->addWidget(mask_group);
 
     // --- Brush Settings ---
@@ -1480,7 +1509,7 @@ void UiPanelTerrain::setupUI()
         "QPushButton { background-color: #7f2a7f; color: white; padding: 8px; }");
     btn_apply_mask_->setToolTip(
         "Paint the selected mesh surface footprint into the landscape mask slot\n"
-        "specified by 'Mask Name' above. Uses Unigine 2.18 getMask(index) API.");
+        "selected in the dropdown above. Uses Unigine 2.18 getMask(index) API.");
     connect(btn_apply_mask_, &QPushButton::clicked, this, &UiPanelTerrain::onApplyToMask);
     actions_layout->addWidget(btn_apply_mask_);
 
@@ -1752,8 +1781,8 @@ void UiPanelTerrain::onApplyPullTerrain()
 /* ========================================================================
  * onApplyToMask  (Unigine 2.18 - Real Landscape Mask)
  *
- * Paints the footprint of the selected mesh surface into the landscape
- * mask slot specified by "Mask Name" (e.g. mask_0 = slot 0).
+ * Paints the footprint of the selected mesh surface into the selected
+ * landscape mask slot from the dropdown.
  *
  * Key differences from the old albedo approach:
  *   - mask_image is R8 grayscale (white = masked, black = no mask)
@@ -1784,46 +1813,28 @@ void UiPanelTerrain::onApplyToMask()
         return;
     }
 
-    std::string mask_name = edit_mask_name_->text().toStdString();
-    if (mask_name.empty())
+    if (!combo_mask_name_ || combo_mask_name_->currentIndex() < 0)
     {
-        logMessage("ERROR: Mask name is empty.");
+        logMessage("ERROR: No mask slot selected.");
         return;
     }
 
-    // Parse mask slot index from "mask_N"
-    int mask_index = 0;
-    if (mask_name.find("mask_") == 0)
+    bool ok = false;
+    const int mask_index = combo_mask_name_->currentData().toInt(&ok);
+    if (!ok || mask_index < 0 || mask_index > 19)
     {
-        try
-        {
-            mask_index = std::stoi(mask_name.substr(5));
-            if (mask_index < 0)
-            {
-                logMessage(QString("ERROR: Invalid mask index %1 (must be >= 0)").arg(mask_index));
-                return;
-            }
-        }
-        catch (...)
-        {
-            logMessage(QString("ERROR: Invalid mask name format. Expected 'mask_N', got '%1'")
-                .arg(QString::fromStdString(mask_name)));
-            return;
-        }
-    }
-    else
-    {
-        logMessage(QString("ERROR: Invalid mask name format. Expected 'mask_N', got '%1'")
-            .arg(QString::fromStdString(mask_name)));
+        logMessage("ERROR: Invalid mask slot selected.");
         return;
     }
+
+    const QString mask_label = combo_mask_name_->currentText();
 
     double brush_size_val = spin_brush_size_->value();
     double flat_distance  = spin_flat_distance_->value();
     double falloff_dist   = spin_falloff_distance_->value();
 
     logMessage(QString("Surface: '%1', Landscape Mask Slot: %2, Brush: %3, Flat: %4, Falloff: %5")
-        .arg(QString::fromStdString(surface_name)).arg(mask_index)
+        .arg(QString::fromStdString(surface_name)).arg(mask_label)
         .arg(brush_size_val).arg(flat_distance).arg(falloff_dist));
 
     ObjectLandscapeTerrainPtr terrain = Landscape::getActiveTerrain();
@@ -1833,7 +1844,9 @@ void UiPanelTerrain::onApplyToMask()
         return;
     }
 
-    logMessage(QString("Painting landscape mask slot %1 via getMask() API...").arg(mask_index));
+    logMessage(QString("Painting landscape mask slot %1 via getMask(%2) API...")
+        .arg(mask_label)
+        .arg(mask_index));
     progress_bar_->setValue(10);
     int total = (int)selected.size();
     int processed = 0;
@@ -1896,8 +1909,9 @@ void UiPanelTerrain::onApplyToMask()
                 applyMaskFalloff(rgba_scratch, height_data, falloff_dist);
 
                 // Transfer alpha channel from RGBA scratch -> R8 mask image.
-                // Flip Y to match the terrain image coordinate convention used
-                // by the helper routines that generated the scratch texture.
+                // The helper path already wrote the scratch alpha with Y flipped,
+                // so copying it again without another flip preserves the final
+                // flipped orientation instead of canceling it out.
                 for (int x = 0; x < tile_res.x; x++)
                 {
                     for (int y = 0; y < tile_res.y; y++)
@@ -1906,7 +1920,7 @@ void UiPanelTerrain::onApplyToMask()
                         Image::Pixel dst;
                         // Convert alpha float [0..1] -> R8 uint [0..255]
                         dst.i.r = Math::clamp(static_cast<int>(src.f.a * 255.0f), 0, 255);
-                        mask_image->set2D(x, tile_res.y - 1 - y, dst);
+                        mask_image->set2D(x, y, dst);
                     }
                 }
 

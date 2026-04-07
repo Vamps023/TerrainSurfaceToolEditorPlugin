@@ -7,6 +7,7 @@ BaseBrushMaterial brush <var_prefix=var texture_prefix=tex>
 	Texture2D terrain_height <source=procedural shared=0> if[data_mask & (1 << 0)]
 	Texture2D terrain_opacity_height <source=procedural shared=0> if[data_mask & (1 << 0)]
 	Texture2D terrain_mask <source=procedural shared=0>
+	Texture2D terrain_opacity_mask <source=procedural shared=0>
 	Texture2D terrain_preview <source=procedural shared=0>
 
 	Texture2D new_height <source=procedural>
@@ -47,12 +48,14 @@ BaseBrushMaterial brush <var_prefix=var texture_prefix=tex>
 
 			STRUCT_FRAG_BEGIN
 				INIT_MRT(float, 0)
+				INIT_MRT(float, 1)
 			STRUCT_FRAG_END
 
 			MAIN_FRAG_BEGIN(FRAGMENT_IN)
 				int2 scr_coord = toInt2(IN_POSITION.xy);
 				float mask_value = TEXTURE_FETCH(tex_new_mask, scr_coord).x;
 				OUT_MRT(0) = mask_value;
+				OUT_MRT(1) = mask_value;
 			MAIN_FRAG_END
 		#}
 	}
@@ -88,10 +91,12 @@ BaseBrushMaterial brush <var_prefix=var texture_prefix=tex>
 		}
 
 		// render mask
-		if (getTexture("terrain_mask") != NULL)
+		if (getTexture("terrain_mask") != NULL && getTexture("terrain_opacity_mask") != NULL)
 		{
 			Texture tex_terrain_mask = getTexture("terrain_mask");
+			Texture tex_terrain_opacity_mask = getTexture("terrain_opacity_mask");
 			render_target.bindColorTexture(0, tex_terrain_mask);
+			render_target.bindColorTexture(1, tex_terrain_opacity_mask);
 			render_target.enable();
 			{
 				renderPass("brush_mask");

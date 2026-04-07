@@ -31,6 +31,7 @@
 #include <QWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include <QComboBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QSlider>
@@ -123,7 +124,9 @@ public:
                                    bool overwrite_with_32bit_float_data);
 
     // Mask image operations
-    bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::NodePtr node, Unigine::ImagePtr mask_image, Unigine::Math::dvec2 brush_size, int mask_index);
+    bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::NodePtr node,
+                        Unigine::ImagePtr mask_image, Unigine::Math::dvec2 brush_size,
+                        int mask_index);
     void SetTerrainAlbedoImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
                                    Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
                                    int data_mask, Unigine::ImagePtr albedo_image);
@@ -243,7 +246,7 @@ private:
 
     // Surface filter
     QLineEdit*      edit_surface_name_;
-    QLineEdit*      edit_mask_name_;
+    QComboBox*      combo_mask_name_;
 
     // Brush settings
     QDoubleSpinBox* spin_brush_size_;
