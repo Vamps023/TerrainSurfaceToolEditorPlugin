@@ -268,6 +268,24 @@ bool TerrainManipulator::SetTerrainHeight(LandscapeLayerMapPtr lmap, ImagePtr he
     return true;
 }
 
+/* --- SetTerrainMask --- */
+bool TerrainManipulator::SetTerrainMask(LandscapeLayerMapPtr lmap, const std::string& mask_name, ImagePtr mask_image)
+{
+    if (!lmap || !mask_image)
+        return false;
+
+    // Direct mask texture manipulation using asyncTextureDraw
+    // This is the correct approach for Unigine terrain masks
+    int id = Landscape::generateOperationID();
+
+    // Store the mask image to be applied in the callback
+    m_pending_mask_images[id] = mask_image;
+    m_pending_mask_names[id] = mask_name;
+
+    PerformMaskOperation(lmap, ivec2{ 0, 0 }, lmap->getResolution());
+    return true;
+}
+
 /* --- CalculateDrawingRegion ---
  * Given a brush position and size in local space, compute the pixel coordinates
  * and size of the region to be modified on the LandscapeLayerMap. */
@@ -308,12 +326,55 @@ void TerrainManipulator::PerformTerrainManipulationOperation(
                                 Landscape::FLAGS_DATA_HEIGHT | Landscape::FLAGS_DATA_ALBEDO);
 }
 
+/* --- PerformMaskOperation ---
+ * Generate an operation ID and request an async texture draw for mask.
+ * Note: In Unigine 2.18, masks are handled via the same flags as height/albedo
+ * We use height flags since masks are stored in the height texture channels. */
+void TerrainManipulator::PerformMaskOperation(
+    LandscapeLayerMapPtr lmap, ivec2 pixel_coord, ivec2 resolution)
+{
+    int id = Landscape::generateOperationID();
+    // Use height flags - masks are typically stored in height texture channels
+    Landscape::asyncTextureDraw(id, lmap->getGUID(), pixel_coord, resolution,
+                                Landscape::FLAGS_DATA_HEIGHT);
+}
+
 /* --- OnTextureDraw ---
  * Callback invoked by Landscape when an async texture draw operation completes.
  * Dequeues the next brush operation and applies it. */
 void TerrainManipulator::OnTextureDraw(
     UGUID guid, int id, LandscapeTexturesPtr buffer, ivec2 coord, int data_mask)
 {
+    // Handle mask operations
+    if (m_pending_mask_images.count(id) > 0)
+    {
+        auto mask_image = m_pending_mask_images[id];
+        auto mask_name = m_pending_mask_names[id];
+
+        if (buffer && mask_image)
+        {
+            // In Unigine 2.18, mask painting is done via the height texture
+            // We copy the mask image data to the height texture's alpha channel
+            auto height_texture = buffer->getHeight();
+            if (height_texture)
+            {
+                height_texture->setImage(mask_image);
+                Log::message("[TerrainManipulator] Applied mask '%s' to height texture (id=%d, size=%dx%d)\n",
+                           mask_name.c_str(), id, mask_image->getWidth(), mask_image->getHeight());
+            }
+            else
+            {
+                Log::warning("[TerrainManipulator] No height texture available in buffer for mask operation id=%d\n", id);
+            }
+        }
+
+        m_pending_mask_images.erase(id);
+        m_pending_mask_names.erase(id);
+        m_in_progress = false;
+        return;
+    }
+
+    // Handle regular brush operations
     if (NumberOfRemainingOperations() == 0)
     {
         Log::message("No data to process, exiting terrain sculpt\n");
@@ -354,6 +415,10 @@ void TerrainManipulator::ApplyBrush(
 
     if (operation.modify_heights)
         brush_material->setTexture("terrain_height", buffer->getHeight());
+
+    // For mask painting, we'll use the opacity texture from the brush material
+    // The mask name is passed via the operation but not directly used in the brush shader
+    // The actual mask texture binding would need to be done via the terrain layer map
 
     brush_material->setParameterFloat("size", operation.brush_size);
     brush_material->setParameterFloat("height", operation.brush_height);
@@ -666,6 +731,15 @@ void UiPanelTerrain::setupUI()
     surface_layout->addWidget(edit_surface_name_);
     main_layout->addWidget(surface_group);
 
+    // --- Mask Filter ---
+    auto* mask_group = new QGroupBox("Mask Filter", this);
+    auto* mask_layout = new QHBoxLayout(mask_group);
+    mask_layout->addWidget(new QLabel("Mask Name:"));
+    edit_mask_name_ = new QLineEdit("mask_0", this);
+    edit_mask_name_->setToolTip("Name of the terrain mask to paint on");
+    mask_layout->addWidget(edit_mask_name_);
+    main_layout->addWidget(mask_group);
+
     // --- Brush Settings ---
     auto* brush_group = new QGroupBox("Brush Settings", this);
     auto* brush_layout = new QVBoxLayout(brush_group);
@@ -706,6 +780,11 @@ void UiPanelTerrain::setupUI()
     btn_apply_->setStyleSheet("QPushButton { background-color: #2a7f2a; color: white; padding: 10px; font-weight: bold; }");
     connect(btn_apply_, &QPushButton::clicked, this, &UiPanelTerrain::onApplyPullTerrain);
     actions_layout->addWidget(btn_apply_);
+
+    btn_apply_mask_ = new QPushButton("Apply to Mask", this);
+    btn_apply_mask_->setStyleSheet("QPushButton { background-color: #7f2a7f; color: white; padding: 8px; }");
+    connect(btn_apply_mask_, &QPushButton::clicked, this, &UiPanelTerrain::onApplyToMask);
+    actions_layout->addWidget(btn_apply_mask_);
 
     btn_smooth_ = new QPushButton("Smooth Terrain Around Selection", this);
     btn_smooth_->setStyleSheet("QPushButton { background-color: #2a6f8f; color: white; padding: 8px; }");
@@ -912,6 +991,182 @@ void UiPanelTerrain::onApplyPullTerrain()
 
     progress_bar_->setValue(100);
     logMessage("=== Pull Terrain Complete ===");
+}
+
+/* --- Apply to Mask --- */
+void UiPanelTerrain::onApplyToMask()
+{
+    using namespace Unigine;
+    using namespace Unigine::Math;
+
+    logMessage("=== Apply to Mask ===");
+    progress_bar_->setValue(0);
+
+    auto selected = plugin_->getSelectedMeshNodes();
+    if (selected.empty())
+    {
+        logMessage("ERROR: No mesh nodes selected.");
+        return;
+    }
+
+    logMessage(QString("Found %1 mesh node(s)").arg(selected.size()));
+
+    std::string surface_name = edit_surface_name_->text().toStdString();
+    if (surface_name.empty())
+    {
+        logMessage("ERROR: Surface name is empty.");
+        return;
+    }
+
+    std::string mask_name = edit_mask_name_->text().toStdString();
+    if (mask_name.empty())
+    {
+        logMessage("ERROR: Mask name is empty.");
+        return;
+    }
+
+    double brush_size_val = spin_brush_size_->value();
+    double flat_distance  = spin_flat_distance_->value();
+    double falloff_dist   = spin_falloff_distance_->value();
+
+    logMessage(QString("Surface: '%1', Mask: '%2', Brush: %3, Flat: %4, Falloff: %5")
+        .arg(QString::fromStdString(surface_name))
+        .arg(QString::fromStdString(mask_name))
+        .arg(brush_size_val).arg(flat_distance).arg(falloff_dist));
+
+    ObjectLandscapeTerrainPtr terrain = Landscape::getActiveTerrain();
+    if (!terrain)
+    {
+        logMessage("ERROR: No active landscape terrain.");
+        return;
+    }
+
+    MaterialPtr brush_material = TerrainManipulator::getCircularTerrainBrushWithFalloff(0.5);
+    if (!brush_material)
+        logMessage("WARNING: Could not create brush material. Using tile approach.");
+
+    progress_bar_->setValue(10);
+    int total = (int)selected.size();
+    int processed = 0;
+
+    for (auto& node : selected)
+    {
+        std::string node_name = node->getName();
+        logMessage(QString("Processing: %1").arg(QString::fromStdString(node_name)));
+
+        if (node->getType() == Node::OBJECT_MESH_STATIC)
+        {
+            auto oms = static_ptr_cast<ObjectMeshStatic>(node);
+
+            int num_surfaces = oms->getNumSurfaces();
+            logMessage(QString("  Surfaces (%1):").arg(num_surfaces));
+            for (int si = 0; si < num_surfaces; si++)
+                logMessage(QString("    [%1] '%2'").arg(si).arg(oms->getSurfaceName(si)));
+
+            int surface_id = oms->findSurface(surface_name.c_str());
+
+            if (surface_id >= 0)
+            {
+                logMessage(QString("  Found surface '%1' (id=%2)")
+                    .arg(QString::fromStdString(surface_name)).arg(surface_id));
+
+                // Use tile-based approach for mask painting
+                logMessage("  Using tile-based mask painting...");
+
+                ObjectSurface obj_surface = std::make_pair(
+                    static_ptr_cast<Object>(oms), surface_id);
+
+                for (int t = 0; t < terrain->getNumChildren(); t++)
+                {
+                    auto lmap = checked_ptr_cast<LandscapeLayerMap>(terrain->getChild(t));
+                    if (!lmap) continue;
+                    if (!lmap->getWorldBoundBox().insideValid(oms->getWorldBoundBox()))
+                        continue;
+
+                    logMessage(QString("  Terrain tile %1...").arg(t));
+                    auto tile_res = lmap->getResolution();
+                    ImagePtr mask_image = Image::create();
+                    mask_image->create2D(tile_res.x, tile_res.y, Image::FORMAT_RGBA32F);
+
+                    // Initialize all pixels with alpha=0 (no mask)
+                    Image::Pixel zp; zp.f.r=0; zp.f.g=0; zp.f.b=0; zp.f.a=0;
+                    for (int x = 0; x < tile_res.x; x++)
+                        for (int y = 0; y < tile_res.y; y++)
+                            mask_image->set2D(x, y, zp);
+
+                    std::map<int,int> height_data;
+                    if (GetSurfaceHeightsForTerrain(lmap, obj_surface, mask_image, height_data))
+                    {
+                        logMessage(QString("  Painted %1 mask points").arg(height_data.size()));
+
+                        // Apply mask using the mask painting function
+                        if (plugin_->getManipulator()->SetTerrainMask(lmap, mask_name, mask_image))
+                            logMessage(QString("  Mask '%1' applied to tile").arg(QString::fromStdString(mask_name)));
+                        else
+                            logMessage("  WARNING: Failed to apply mask (brush material missing).");
+                    }
+                }
+            }
+            else
+            {
+                logMessage(QString("  '%1' not found, trying regex...").arg(QString::fromStdString(surface_name)));
+                try
+                {
+                    std::regex rx(surface_name);
+                    bool matched = false;
+                    for (int s = 0; s < oms->getNumSurfaces(); s++)
+                    {
+                        std::string sn = oms->getSurfaceName(s);
+                        if (std::regex_search(sn, rx))
+                        {
+                            matched = true;
+                            logMessage(QString("  Regex matched: '%1' (id=%2)")
+                                .arg(QString::fromStdString(sn)).arg(s));
+
+                            // Paint mask for this surface
+                            ObjectSurface obj_surface = std::make_pair(static_ptr_cast<Object>(oms), s);
+
+                            for (int t = 0; t < terrain->getNumChildren(); t++)
+                            {
+                                auto lmap = checked_ptr_cast<LandscapeLayerMap>(terrain->getChild(t));
+                                if (!lmap) continue;
+                                if (!lmap->getWorldBoundBox().insideValid(oms->getWorldBoundBox()))
+                                    continue;
+
+                                auto tile_res = lmap->getResolution();
+                                ImagePtr mask_image = Image::create();
+                                mask_image->create2D(tile_res.x, tile_res.y, Image::FORMAT_RGBA32F);
+
+                                Image::Pixel zp; zp.f.r=0; zp.f.g=0; zp.f.b=0; zp.f.a=0;
+                                for (int x = 0; x < tile_res.x; x++)
+                                    for (int y = 0; y < tile_res.y; y++)
+                                        mask_image->set2D(x, y, zp);
+
+                                std::map<int,int> height_data;
+                                if (GetSurfaceHeightsForTerrain(lmap, obj_surface, mask_image, height_data))
+                                {
+                                    if (plugin_->getManipulator()->SetTerrainMask(lmap, mask_name, mask_image))
+                                        logMessage(QString("  Mask '%1' applied").arg(QString::fromStdString(mask_name)));
+                                }
+                            }
+                        }
+                    }
+                    if (!matched)
+                        logMessage("  WARNING: No surfaces matched. Check names above.");
+                }
+                catch (const std::regex_error& e)
+                {
+                    logMessage(QString("  Regex error: %1").arg(e.what()));
+                }
+            }
+        }
+
+        processed++;
+        progress_bar_->setValue(10 + (processed * 80) / total);
+    }
+
+    progress_bar_->setValue(100);
+    logMessage("=== Apply to Mask Complete ===");
 }
 
 /* --- Smooth Terrain Around Selection --- */

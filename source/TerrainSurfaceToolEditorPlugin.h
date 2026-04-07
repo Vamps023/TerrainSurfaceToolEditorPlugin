@@ -89,6 +89,8 @@ public:
         HeightBlendMode      height_blend_mode = HeightBlendMode::Alpha;
         bool                 modify_heights = false;
         bool                 modify_albedo = false;
+        bool                 modify_mask = false;
+        std::string          mask_name;
     };
 
     // Public terrain operations
@@ -101,6 +103,9 @@ public:
 
     // Height image operations
     bool SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
+
+    // Mask image operations
+    bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, const std::string& mask_name, Unigine::ImagePtr mask_image);
 
     // Status
     bool   IsTerrainManipulationInProgress() const;
@@ -128,6 +133,10 @@ private:
                                              Unigine::Math::ivec2 pixel_coord,
                                              Unigine::Math::ivec2 resolution);
 
+    void PerformMaskOperation(Unigine::LandscapeLayerMapPtr lmap,
+                              Unigine::Math::ivec2 pixel_coord,
+                              Unigine::Math::ivec2 resolution);
+
     void OnTextureDraw(Unigine::UGUID guid, int id, Unigine::LandscapeTexturesPtr buffer,
                        Unigine::Math::ivec2 coord, int data_mask);
 
@@ -139,6 +148,10 @@ private:
     bool m_operations_blocked = false;
     int  m_lock_count = 0;
     Unigine::EventConnectionId m_event_connection_id = nullptr;
+
+    // Pending mask operations
+    std::map<int, Unigine::ImagePtr> m_pending_mask_images;
+    std::map<int, std::string> m_pending_mask_names;
 };
 
 /* ========================================================================
@@ -197,6 +210,7 @@ public:
 
 private slots:
     void onApplyPullTerrain();
+    void onApplyToMask();
     void onSmoothTerrain();
     void onResetTerrainHeight();
 
@@ -212,6 +226,7 @@ private:
 
     // Surface filter
     QLineEdit*      edit_surface_name_;
+    QLineEdit*      edit_mask_name_;
 
     // Brush settings
     QDoubleSpinBox* spin_brush_size_;
@@ -222,6 +237,7 @@ private:
 
     // Action buttons
     QPushButton* btn_apply_;
+    QPushButton* btn_apply_mask_;
     QPushButton* btn_smooth_;
     QPushButton* btn_reset_;
 
