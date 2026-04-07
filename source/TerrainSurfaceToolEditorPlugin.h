@@ -229,7 +229,6 @@ public:
 private slots:
     void onApplyPullTerrain();
     void onApplyToMask();
-    void onSmoothTerrain();
     void onResetTerrainHeight();
 
 private:
@@ -256,7 +255,6 @@ private:
     // Action buttons
     QPushButton* btn_apply_;
     QPushButton* btn_apply_mask_;
-    QPushButton* btn_smooth_;
     QPushButton* btn_reset_;
 
     // Progress & log

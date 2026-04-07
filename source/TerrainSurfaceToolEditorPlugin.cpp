@@ -1484,12 +1484,6 @@ void UiPanelTerrain::setupUI()
     connect(btn_apply_mask_, &QPushButton::clicked, this, &UiPanelTerrain::onApplyToMask);
     actions_layout->addWidget(btn_apply_mask_);
 
-    btn_smooth_ = new QPushButton("Smooth Terrain Around Selection", this);
-    btn_smooth_->setStyleSheet(
-        "QPushButton { background-color: #2a6f8f; color: white; padding: 8px; }");
-    connect(btn_smooth_, &QPushButton::clicked, this, &UiPanelTerrain::onSmoothTerrain);
-    actions_layout->addWidget(btn_smooth_);
-
     btn_reset_ = new QPushButton("Reset / Clear Heights", this);
     btn_reset_->setStyleSheet(
         "QPushButton { background-color: #8f2a2a; color: white; padding: 8px; }");
@@ -2005,93 +1999,6 @@ void UiPanelTerrain::onApplyToMask()
 
     progress_bar_->setValue(100);
     logMessage("=== Apply to Landscape Mask Complete ===");
-}
-
-/* --- Smooth Terrain Around Selection --- */
-void UiPanelTerrain::onSmoothTerrain()
-{
-    using namespace Unigine;
-    using namespace Unigine::Math;
-
-    logMessage("=== Smooth Terrain ===");
-    progress_bar_->setValue(0);
-
-    auto selected = plugin_->getSelectedMeshNodes();
-    if (selected.empty())
-    {
-        logMessage("ERROR: No mesh nodes selected.");
-        return;
-    }
-
-    ObjectLandscapeTerrainPtr terrain = Landscape::getActiveTerrain();
-    if (!terrain)
-    {
-        logMessage("ERROR: No active landscape terrain.");
-        return;
-    }
-
-    std::string surface_name = edit_surface_name_->text().toStdString();
-    double flat_dist   = spin_flat_distance_->value();
-    double falloff     = spin_falloff_distance_->value();
-    int    passes      = (int)spin_smooth_iterations_->value();
-    double strength    = spin_smooth_strength_->value();
-
-    logMessage(QString("Passes: %1, Strength: %2").arg(passes).arg(strength));
-
-    int total = (int)selected.size();
-    int processed = 0;
-
-    for (auto& node : selected)
-    {
-        if (node->getType() != Node::OBJECT_MESH_STATIC) continue;
-        auto oms = static_ptr_cast<ObjectMeshStatic>(node);
-
-        int sid = oms->findSurface(surface_name.c_str());
-        if (sid < 0)
-        {
-            if (oms->getNumSurfaces() > 0) sid = 0;
-            else continue;
-        }
-
-        ObjectSurface obj_surface = std::make_pair(static_ptr_cast<Object>(oms), sid);
-
-        for (int t = 0; t < terrain->getNumChildren(); t++)
-        {
-            auto lmap = checked_ptr_cast<LandscapeLayerMap>(terrain->getChild(t));
-            if (!lmap) continue;
-            if (!lmap->getWorldBoundBox().insideValid(oms->getWorldBoundBox()))
-                continue;
-
-            auto tile_res = lmap->getResolution();
-            ImagePtr heights_image = Image::create();
-            heights_image->create2D(tile_res.x, tile_res.y, Image::FORMAT_RGBA32F);
-
-            Image::Pixel zp; zp.f.r=0; zp.f.g=0; zp.f.b=0; zp.f.a=0;
-            for (int x = 0; x < tile_res.x; x++)
-                for (int y = 0; y < tile_res.y; y++)
-                    heights_image->set2D(x, y, zp);
-
-            std::map<int,int> height_data;
-            if (GetSurfaceHeightsForTerrainHeightmap(lmap, obj_surface, heights_image, height_data))
-            {
-                for (int p = 0; p < passes; p++)
-                    smoothTerrainHeights(lmap, heights_image, height_data,
-                                         flat_dist * strength, falloff * strength);
-
-                if (plugin_->getManipulator()->SetTerrainHeight(lmap, heights_image))
-                    logMessage(QString("  Smoothed tile %1 (%2 passes)").arg(t).arg(passes));
-                else
-                    logMessage(QString("  WARNING: Failed to smooth tile %1 "
-                                       "(brush material missing)").arg(t));
-            }
-        }
-
-        processed++;
-        progress_bar_->setValue((processed * 100) / total);
-    }
-
-    progress_bar_->setValue(100);
-    logMessage("=== Smooth Complete ===");
 }
 
 /* --- Reset / Clear Terrain Heights --- */
