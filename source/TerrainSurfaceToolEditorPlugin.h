@@ -254,13 +254,9 @@ private slots:
 
 private:
     void setupUI();
-    void updateSelectionStatus();
     void logMessage(const QString& msg);
 
     UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin_;
-
-    // Selection
-    QLabel*      selection_status_label_;
 
     // Surface filter
     QLineEdit*      edit_surface_name_;
@@ -270,8 +266,6 @@ private:
     QDoubleSpinBox* spin_brush_size_;
     QDoubleSpinBox* spin_flat_distance_;
     QDoubleSpinBox* spin_falloff_distance_;
-    QDoubleSpinBox* spin_smooth_iterations_;
-    QDoubleSpinBox* spin_smooth_strength_;
 
     // Action buttons
     QPushButton* btn_apply_;

@@ -1523,7 +1523,6 @@ UiPanelTerrain::UiPanelTerrain(UnigineEditor::TerrainSurfaceToolEditorPlugin* pl
     , plugin_(plugin)
 {
     setupUI();
-    updateSelectionStatus();
 
     setWindowTitle("Terrain Surface Tool");
     resize(400, 700);
@@ -1561,11 +1560,6 @@ void UiPanelTerrain::setupUI()
     header_font.setPointSize(14);
     header->setFont(header_font);
     main_layout->addWidget(header);
-
-    // --- Selection Status ---
-    selection_status_label_ = new QLabel("No mesh nodes selected", this);
-    selection_status_label_->setStyleSheet("color: #ffcc00;");
-    main_layout->addWidget(selection_status_label_);
 
     // --- Surface Filter ---
     auto* surface_group = new QGroupBox("Surface Filter", this);
@@ -1625,10 +1619,6 @@ void UiPanelTerrain::setupUI()
         "Distance from track to flatten terrain (pixels)");
     spin_falloff_distance_ = addSpinRow("Falloff Distance:", 0.0, 2000.0, 30.0, 5.0,
         "Distance over which terrain blends back (pixels)");
-    spin_smooth_iterations_ = addSpinRow("Smooth Passes:", 1.0, 50.0, 3.0, 1.0,
-        "Number of smoothing passes");
-    spin_smooth_strength_ = addSpinRow("Smooth Strength:", 0.0, 1.0, 0.5, 0.1,
-        "Strength of each smoothing pass (0=none, 1=max)");
 
     main_layout->addWidget(brush_group);
 
@@ -1674,23 +1664,6 @@ void UiPanelTerrain::setupUI()
     main_layout->addWidget(status_text_);
 
     main_layout->addStretch();
-}
-
-void UiPanelTerrain::updateSelectionStatus()
-{
-    if (!plugin_) return;
-    auto nodes = plugin_->getSelectedMeshNodes();
-    if (nodes.empty())
-    {
-        selection_status_label_->setText("No mesh nodes selected");
-        selection_status_label_->setStyleSheet("color: #ff6666;");
-    }
-    else
-    {
-        selection_status_label_->setText(
-            QString("%1 mesh node(s) selected").arg(nodes.size()));
-        selection_status_label_->setStyleSheet("color: #66ff66;");
-    }
 }
 
 void UiPanelTerrain::logMessage(const QString& msg)
@@ -1766,7 +1739,7 @@ void UiPanelTerrain::onApplyPullTerrain()
         if (node->getType() == Node::OBJECT_MESH_STATIC)
         {
             auto oms = static_ptr_cast<ObjectMeshStatic>(node);
-            const double smoothing_strength = spin_smooth_strength_->value();
+            const double smoothing_strength = 0.5;
 
             int num_surfaces = oms->getNumSurfaces();
             logMessage(QString("  Surfaces (%1):").arg(num_surfaces));
