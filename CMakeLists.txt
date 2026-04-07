@@ -42,12 +42,20 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/source
 )
 
-# Source files - Single plugin with all terrain logic integrated
+# Source files
 set(SOURCES
+    source/LandscapeSaveManager.cpp
+    source/SurfaceRasterizer.cpp
+    source/TerrainManipulator.cpp
+    source/TerrainToolPanel.cpp
     source/TerrainSurfaceToolEditorPlugin.cpp
 )
 
 set(HEADERS
+    source/LandscapeSaveManager.h
+    source/SurfaceRasterizer.h
+    source/TerrainManipulator.h
+    source/TerrainToolPanel.h
     source/TerrainSurfaceToolEditorPlugin.h
 )
 
