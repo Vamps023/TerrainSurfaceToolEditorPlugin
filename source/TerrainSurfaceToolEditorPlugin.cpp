@@ -8,6 +8,8 @@
 
 #define _USE_MATH_DEFINES
 #include "TerrainSurfaceToolEditorPlugin.h"
+#include <UnigineCallback.h>
+#include <UnigineRender.h>
 #include <math.h>
 #include <QtWidgets/QApplication>
 #include <QtGui/QPalette>
@@ -22,6 +24,46 @@ int getLandscapeMaskFlag(int mask_index)
     if (mask_index < 0 || mask_index > 19)
         return 0;
     return Landscape::FLAGS_DATA_MASK_0 << mask_index;
+}
+
+int round_up(int value, int round)
+{
+    return ((value + (round - 1)) / round) * round;
+}
+
+ivec2 round_up(ivec2 value, ivec2 round)
+{
+    return ((value + (round - 1)) / round) * round;
+}
+
+int group_threads(int width, int kernel_size)
+{
+    return __max(1, round_up(width, kernel_size) / kernel_size);
+}
+
+ImagePtr createHeightAlphaImage(const ImagePtr &height_image)
+{
+    if (!height_image)
+        return nullptr;
+
+    ImagePtr alpha_image = Image::create();
+    alpha_image->create2D(height_image->getWidth(), height_image->getHeight(), Image::FORMAT_RGBA32F);
+
+    for (int x = 0; x < height_image->getWidth(); ++x)
+    {
+        for (int y = 0; y < height_image->getHeight(); ++y)
+        {
+            Image::Pixel src = height_image->get2D(x, y);
+            Image::Pixel dst;
+            dst.f.r = src.f.a;
+            dst.f.g = src.f.a;
+            dst.f.b = src.f.a;
+            dst.f.a = src.f.a;
+            alpha_image->set2D(x, y, dst);
+        }
+    }
+
+    return alpha_image;
 }
 }
 
@@ -60,6 +102,12 @@ size_t TerrainManipulator::NumberOfRemainingOperations() const
 void TerrainManipulator::BlockBrushOperations(bool block)
 {
     m_operations_blocked = block;
+}
+
+void TerrainManipulator::SetBlockOperationCount(int count)
+{
+    m_lock_count = count;
+    m_operations_blocked = m_lock_count > 0;
 }
 
 /* --- RaiseTerrainToSurface ---
@@ -106,9 +154,10 @@ void TerrainManipulator::RaiseTerrainToSurface(
 
     // Sample along the midpoint path at brush_size intervals for smooth coverage
     std::vector<vec3> brush_locales;
+    const double sample_spacing = std::clamp(static_cast<double>(brush_size.x) * 0.2, 1.0, 10.0);
     for (int i = 0; i < (int)mid_points.size() - 1; i++)
     {
-        auto samples = SampleLine(mid_points[i], mid_points[i + 1], brush_size.x * 0.4f);
+        auto samples = SampleLine(mid_points[i], mid_points[i + 1], sample_spacing);
         brush_locales.push_back(mid_points[i]);
         brush_locales.insert(brush_locales.end(), samples.begin(), samples.end());
         brush_locales.push_back(mid_points[i + 1]);
@@ -268,8 +317,28 @@ bool TerrainManipulator::SetTerrainHeight(LandscapeLayerMapPtr lmap, ImagePtr he
     if (!lmap || !height_image)
         return false;
 
-    auto brush = getTerrainTileBrush(height_image);
-    if (!brush)
+    if (height_image->getFormat() != Image::FORMAT_RGBA32F)
+    {
+        if (!height_image->convertToFormat(Image::FORMAT_RGBA32F))
+        {
+            Log::warning("[TerrainManipulator] Failed to convert height image to RGBA32F.\n");
+            return false;
+        }
+    }
+
+    const ivec2 tile_resolution = lmap->getResolution();
+    if (height_image->getWidth() != tile_resolution.x || height_image->getHeight() != tile_resolution.y)
+    {
+        if (!height_image->resize(tile_resolution.x, tile_resolution.y))
+        {
+            Log::warning("[TerrainManipulator] Failed to resize height image to tile resolution (%d x %d).\n",
+                         tile_resolution.x, tile_resolution.y);
+            return false;
+        }
+    }
+
+    auto alpha_image = createHeightAlphaImage(height_image);
+    if (!alpha_image)
         return false;
 
     BrushOperationData data;
@@ -278,17 +347,452 @@ bool TerrainManipulator::SetTerrainHeight(LandscapeLayerMapPtr lmap, ImagePtr he
     data.brush_rotation = 0;
     data.brush_opacity = 1;
     data.height_blend_mode = HeightBlendMode::Alpha;
-    data.brush_material = brush;
     data.modify_heights = true;
     data.modify_albedo = false;
     data.modify_mask = false;
     data.mask_index = 0;
+    data.height_image = height_image;
+    data.alpha_image = alpha_image;
 
     int operation_id = Landscape::generateOperationID();
     m_pending_operations.emplace(operation_id, data);
     Landscape::asyncTextureDraw(operation_id, lmap->getGUID(), ivec2{ 0, 0 }, lmap->getResolution(),
-                                Landscape::FLAGS_DATA_HEIGHT | Landscape::FLAGS_DATA_ALBEDO);
+                                Landscape::FLAGS_FILE_DATA_HEIGHT |
+                                Landscape::FLAGS_FILE_DATA_OPACITY_HEIGHT);
     return true;
+}
+
+void TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
+                                                   LandscapeTexturesPtr buffer, ivec2 coord,
+                                                   int data_mask, TexturePtr height_texture,
+                                                   bool overwrite_with_32bit_float_data)
+{
+    SetTerrainHeightImmediate(lmap, guid, id, buffer, coord, data_mask,
+                              height_texture, buffer ? buffer->getOpacityHeight() : nullptr,
+                              overwrite_with_32bit_float_data);
+}
+
+void TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
+                                                   LandscapeTexturesPtr buffer, ivec2 coord,
+                                                   int data_mask, TexturePtr height_texture,
+                                                   TexturePtr alpha_texture,
+                                                   bool overwrite_with_32bit_float_data)
+{
+    UNIGINE_UNUSED(lmap);
+    UNIGINE_UNUSED(guid);
+    UNIGINE_UNUSED(id);
+    UNIGINE_UNUSED(coord);
+    UNIGINE_UNUSED(data_mask);
+
+    if (!buffer || !height_texture || !alpha_texture)
+        return;
+
+    if (!overwrite_with_32bit_float_data)
+    {
+        Log::warning("[TerrainManipulator] Non-overwrite immediate terrain writes are not implemented.\n");
+        return;
+    }
+
+    std::string base_brush_mat_name = "terrain_brush_r32f_overwrite.basebrush";
+    auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(base_brush_mat_name.c_str()));
+    if (!file_guid.isValid())
+    {
+        Log::warning("[TerrainManipulator] Could not find brush material: %s\n", base_brush_mat_name.c_str());
+        return;
+    }
+
+    auto brush_material = Materials::findMaterialByFileGUID(file_guid)->inherit();
+    brush_material->setTexture("terrain_height", buffer->getHeight());
+    brush_material->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
+    brush_material->setTexture("new_height", height_texture);
+    brush_material->setTexture("new_alpha", alpha_texture);
+    brush_material->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+    brush_material->setTexture("terrain_height", nullptr);
+    brush_material->setTexture("terrain_opacity_height", nullptr);
+    brush_material->setTexture("new_height", nullptr);
+    brush_material->setTexture("new_alpha", nullptr);
+}
+
+bool TerrainManipulator::RaiseTerrainToSurfacesCompute(const std::vector<NodePtr>& nodes,
+                                                       const std::string& surface_pattern,
+                                                       double flat_distance, double falloff_distance,
+                                                       double smoothing_strength, double bias)
+{
+    const char* compute_material_name = "raise_terrain_to_surfaces_comp.basemat";
+    auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(compute_material_name));
+    if (!file_guid.isValid())
+    {
+        Log::warning("[TerrainManipulator] Could not find terrain compute material: %s\n",
+                     compute_material_name);
+        return false;
+    }
+
+    auto compute_material = Materials::findMaterialByFileGUID(file_guid)->inherit();
+    auto active_terrain = Landscape::getActiveTerrain();
+    if (!active_terrain)
+    {
+        Log::warning("[TerrainManipulator] No active terrain found for compute sculpt.\n");
+        return false;
+    }
+
+    std::regex surface_regex;
+    try
+    {
+        surface_regex = std::regex(surface_pattern);
+    }
+    catch (const std::regex_error& e)
+    {
+        Log::warning("[TerrainManipulator] Invalid surface regex '%s': %s\n",
+                     surface_pattern.c_str(), e.what());
+        return false;
+    }
+
+    Unigine::Vector<NodePtr> selected_nodes;
+    for (const auto& node : nodes)
+        selected_nodes.append(node);
+
+    auto flattened_objects = flattenToObjectList(selected_nodes);
+    std::vector<ObjectSurface> candidate_pairs;
+    candidate_pairs.reserve(flattened_objects.size());
+    for (auto obj : flattened_objects)
+    {
+        auto surface = getBaseSurface(obj, surface_regex);
+        if (surface.first)
+            candidate_pairs.push_back(surface);
+    }
+
+    if (candidate_pairs.empty())
+    {
+        Log::warning("[TerrainManipulator] No surfaces matched '%s' for compute sculpt.\n",
+                     surface_pattern.c_str());
+        return false;
+    }
+
+    std::vector<LandscapeLayerMapPtr> terrain_tiles;
+    terrain_tiles.reserve(active_terrain->getNumChildren());
+    for (int i = 0; i < active_terrain->getNumChildren(); ++i)
+    {
+        if (auto lmap = checked_ptr_cast<LandscapeLayerMap>(active_terrain->getChild(i)); lmap != nullptr)
+            terrain_tiles.push_back(lmap);
+    }
+
+    if (terrain_tiles.empty())
+    {
+        Log::warning("[TerrainManipulator] No landscape layer maps found for compute sculpt.\n");
+        return false;
+    }
+
+    bool scheduled_any = false;
+    const float radius = static_cast<float>(flat_distance + falloff_distance);
+
+    for (auto terrain_tile : terrain_tiles)
+    {
+        auto objects_for_tile = getObjectsWithinBoundingBox(
+            terrain_tile->getWorldBoundBox(), candidate_pairs, radius);
+        if (objects_for_tile.empty())
+            continue;
+
+        auto terrain_guid = terrain_tile->getGUID();
+        auto tile_resolution = terrain_tile->getResolution();
+        if (tile_resolution.x <= 0 || tile_resolution.y <= 0)
+            continue;
+
+        ivec2 max_subtile_resolution = ivec2(1024);
+        ivec2 tile_subtiles = round_up(tile_resolution, max_subtile_resolution) / max_subtile_resolution;
+
+        for (int subtile_y = 0; subtile_y < tile_subtiles.y; ++subtile_y)
+        {
+            for (int subtile_x = 0; subtile_x < tile_subtiles.x; ++subtile_x)
+            {
+                ivec2 subtile_pixel_coord = ivec2(subtile_x, subtile_y) * max_subtile_resolution;
+                ivec2 subtile_resolution = min(tile_resolution - subtile_pixel_coord, max_subtile_resolution);
+
+                BoundBox tile_bb = terrain_tile->getBoundBox();
+                dmat4 tile_world_transform = terrain_tile->getWorldTransform();
+                vec3 subtile_minimum(vec2(subtile_pixel_coord) * vec2(terrain_tile->getTexelSize()),
+                                     tile_bb.minimum.z);
+                vec3 subtile_maximum(vec2(subtile_pixel_coord + subtile_resolution) * vec2(terrain_tile->getTexelSize()),
+                                     tile_bb.maximum.z);
+                BoundBox subtile_bb(subtile_minimum, subtile_maximum);
+                WorldBoundBox subtile_wbb = WorldBoundBox(subtile_bb, tile_world_transform);
+
+                auto objects_for_subtile = getObjectsWithinBoundingBox(subtile_wbb, objects_for_tile, radius);
+                if (objects_for_subtile.empty())
+                    continue;
+
+                int operation_id = Landscape::generateOperationID();
+                m_async_operations_count++;
+                SetBlockOperationCount(m_async_operations_count);
+
+                EventConnections* connections = new EventConnections();
+                Landscape::getEventTextureDraw().connect(
+                    *connections,
+                    [this,
+                     subtile_pixel_coord,
+                     subtile_resolution,
+                     compute_material,
+                     connections,
+                     terrain_guid,
+                     operation_id,
+                     terrain_tile,
+                     objects_for_subtile,
+                     flat_distance,
+                     falloff_distance,
+                     bias,
+                     smoothing_strength](const UGUID& invoke_guid, int invoke_id,
+                                         const LandscapeTexturesPtr& buffer,
+                                         const ivec2& coord, int data_mask)
+                    {
+                        if (invoke_guid != terrain_guid || invoke_id != operation_id)
+                            return;
+
+                        const ivec2 buffer_resolution = buffer ? buffer->getResolution() : ivec2_zero;
+                        const bool has_height_texture = buffer && buffer->getHeight().isValid();
+                        const bool has_opacity_texture = buffer && buffer->getOpacityHeight().isValid();
+                        Log::message("[TerrainManipulator] Compute callback for tile '%s' subtile (%d,%d) size (%d,%d), buffer (%d,%d), coord (%d,%d), data_mask=0x%X, height=%d, opacity=%d\n",
+                                     terrain_tile->getName(),
+                                     subtile_pixel_coord.x, subtile_pixel_coord.y,
+                                     subtile_resolution.x, subtile_resolution.y,
+                                     buffer_resolution.x, buffer_resolution.y,
+                                     coord.x, coord.y, data_mask,
+                                     has_height_texture ? 1 : 0,
+                                     has_opacity_texture ? 1 : 0);
+
+                        auto finish_operation = [this, connections]()
+                        {
+                            m_async_operations_count--;
+                            SetBlockOperationCount(m_async_operations_count);
+                            delete connections;
+                        };
+
+                        TexturePtr output_texture_gpu = Texture::create();
+                        if (!output_texture_gpu.isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+                        output_texture_gpu->create2D(
+                            subtile_resolution.x,
+                            subtile_resolution.y,
+                            Texture::FORMAT_R32F,
+                            Texture::FORMAT_USAGE_RENDER | Texture::FORMAT_USAGE_UNORDERED_ACCESS);
+                        if (!output_texture_gpu->isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+
+                        TexturePtr output_alpha_texture_gpu = Texture::create();
+                        if (!output_alpha_texture_gpu.isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+                        output_alpha_texture_gpu->create2D(
+                            subtile_resolution.x,
+                            subtile_resolution.y,
+                            Texture::FORMAT_R32F,
+                            Texture::FORMAT_USAGE_RENDER | Texture::FORMAT_USAGE_UNORDERED_ACCESS);
+                        if (!output_alpha_texture_gpu->isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+
+                        TexturePtr src_height_texture = buffer->getHeight();
+                        TexturePtr src_opacity_texture = buffer->getOpacityHeight();
+                        if (!src_height_texture.isValid() || !src_height_texture->isValid() ||
+                            !src_opacity_texture.isValid() || !src_opacity_texture->isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+
+                        Unigine::Vector<dvec3> vertices_world_space;
+                        for (const auto& object_surface : objects_for_subtile)
+                            appendBaseVerts(object_surface, vertices_world_space);
+
+                        const size_t z_vertex_count = vertices_world_space.size();
+                        Log::message("[TerrainManipulator] Compute input vertex count: %d\n",
+                                     static_cast<int>(z_vertex_count));
+                        if (z_vertex_count == 0 || (z_vertex_count % 3) != 0 || z_vertex_count >= INT_MAX)
+                        {
+                            finish_operation();
+                            return;
+                        }
+
+                        StructuredBufferPtr vertices_world_space_buffer_gpu = StructuredBuffer::create();
+                        vertices_world_space_buffer_gpu->create(
+                            StructuredBuffer::GPU_RESOURCE | StructuredBuffer::IMMUTABLE,
+                            vertices_world_space.get(),
+                            sizeof(dvec3),
+                            static_cast<unsigned int>(z_vertex_count));
+                        if (!vertices_world_space_buffer_gpu.isValid() ||
+                            !vertices_world_space_buffer_gpu->isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+
+                        struct ConfigBuffer
+                        {
+                            dmat4x4_values tile_world_transform;
+                            dmat4x4_values tile_inv_world_transform;
+                            unsigned int triangle_count;
+                            unsigned int vertex_count;
+                            ivec2 tile_resolution;
+                            ivec2 subtile_pixel_coord;
+                            ivec2 subtile_resolution;
+                            float flat_distance;
+                            float falloff_distance;
+                            float bias;
+                            float rational;
+                            vec2 tile_size;
+                            vec2 tile_coord_to_position;
+                        };
+
+                        ConfigBuffer config = {};
+                        config.flat_distance = static_cast<float>(flat_distance);
+                        config.falloff_distance = static_cast<float>(falloff_distance);
+                        config.bias = static_cast<float>(bias);
+                        config.rational = 0.0f;
+                        if (smoothing_strength > 0.0)
+                        {
+                            config.rational = 1.0f / clamp(
+                                1.0f - static_cast<float>(smoothing_strength), 0.01f, 0.99f);
+                        }
+
+                        config.vertex_count = static_cast<int>(z_vertex_count);
+                        config.triangle_count = config.vertex_count / 3;
+                        config.tile_resolution = terrain_tile->getResolution();
+                        config.subtile_pixel_coord = subtile_pixel_coord;
+                        config.subtile_resolution = subtile_resolution;
+                        config.tile_size = vec2(terrain_tile->getSize());
+                        config.tile_coord_to_position = vec2(terrain_tile->getTexelSize());
+
+                        dmat4 terrain_world_transform = terrain_tile->getWorldTransform();
+                        terrain_world_transform.get(config.tile_world_transform, true);
+                        dmat4 terrain_inv_world_transform = terrain_tile->getIWorldTransform();
+                        terrain_inv_world_transform.get(config.tile_inv_world_transform, true);
+
+                        StructuredBufferPtr config_buffer_gpu = StructuredBuffer::create();
+                        config_buffer_gpu->create(
+                            StructuredBuffer::GPU_RESOURCE | StructuredBuffer::IMMUTABLE,
+                            &config,
+                            sizeof(ConfigBuffer),
+                            1);
+                        if (!config_buffer_gpu.isValid() || !config_buffer_gpu->isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+
+                        RenderState::setTexture(RenderState::BIND_ALL, 0, src_height_texture);
+                        RenderState::setTexture(RenderState::BIND_ALL, 1, src_opacity_texture);
+
+                        RenderTargetPtr render_target = RenderTarget::create();
+                        if (!render_target.isValid())
+                        {
+                            finish_operation();
+                            return;
+                        }
+
+                        render_target->bindStructuredBuffer(0, config_buffer_gpu);
+                        render_target->bindUnorderedAccessTexture(1, output_texture_gpu, true);
+                        render_target->bindUnorderedAccessTexture(2, output_alpha_texture_gpu, true);
+                        render_target->bindStructuredBuffer(3, vertices_world_space_buffer_gpu);
+                        render_target->enableCompute();
+
+                        constexpr int NUM_GROUP_X = 32;
+                        constexpr int NUM_GROUP_Y = 32;
+                        int group_threads_x = group_threads(subtile_resolution.x, NUM_GROUP_X);
+                        int group_threads_y = group_threads(subtile_resolution.y, NUM_GROUP_Y);
+                        constexpr int thread_group_block = 16;
+
+                        for (int thread_offset_y = 0; thread_offset_y < group_threads_y; thread_offset_y += thread_group_block)
+                        {
+                            int threads_lower_y = thread_offset_y;
+                            int threads_upper_y = min(group_threads_y, thread_offset_y + thread_group_block);
+                            int threads_y = threads_upper_y - threads_lower_y;
+
+                            for (int thread_offset_x = 0; thread_offset_x < group_threads_x; thread_offset_x += thread_group_block)
+                            {
+                                int threads_lower_x = thread_offset_x;
+                                int threads_upper_x = min(group_threads_x, thread_offset_x + thread_group_block);
+                                int threads_x = threads_upper_x - threads_lower_x;
+
+                                struct GroupBuffer
+                                {
+                                    int offset_x;
+                                    int offset_y;
+                                    int threads_x;
+                                    int threads_y;
+                                    int threads_lower_x;
+                                    int threads_upper_x;
+                                    int threads_lower_y;
+                                    int threads_upper_y;
+                                };
+
+                                GroupBuffer group = {};
+                                group.offset_x = threads_lower_x * NUM_GROUP_X;
+                                group.offset_y = threads_lower_y * NUM_GROUP_Y;
+                                group.threads_x = threads_x;
+                                group.threads_y = threads_y;
+                                group.threads_lower_x = threads_lower_x;
+                                group.threads_upper_x = threads_upper_x;
+                                group.threads_lower_y = threads_lower_y;
+                                group.threads_upper_y = threads_upper_y;
+
+                                StructuredBufferPtr group_buffer_gpu = StructuredBuffer::create();
+                                group_buffer_gpu->create(
+                                    StructuredBuffer::GPU_RESOURCE | StructuredBuffer::IMMUTABLE,
+                                    &group,
+                                    sizeof(GroupBuffer),
+                                    1);
+                                if (!group_buffer_gpu.isValid() || !group_buffer_gpu->isValid())
+                                    continue;
+
+                                render_target->bindStructuredBuffer(4, group_buffer_gpu);
+                                compute_material->renderCompute(Render::PASS_POST, threads_x, threads_y);
+                                render_target->flush();
+                            }
+                        }
+
+                        render_target->disable();
+                        render_target->unbindAll();
+                        RenderState::setTexture(RenderState::BIND_ALL, 0, nullptr);
+                        RenderState::setTexture(RenderState::BIND_ALL, 1, nullptr);
+
+                        SetTerrainHeightImmediate(
+                            terrain_tile, invoke_guid, invoke_id, buffer, coord, data_mask,
+                            output_texture_gpu, output_alpha_texture_gpu, true);
+                        Log::message("[TerrainManipulator] Compute height writeback complete for tile '%s'\n",
+                                     terrain_tile->getName());
+
+                        finish_operation();
+                    });
+
+                const int compute_data_flags =
+                    Landscape::FLAGS_FILE_DATA_HEIGHT |
+                    Landscape::FLAGS_FILE_DATA_OPACITY_HEIGHT;
+                Landscape::asyncTextureDraw(
+                    operation_id, terrain_guid, subtile_pixel_coord, subtile_resolution,
+                    compute_data_flags);
+                Log::message("[TerrainManipulator] Queued compute sculpt for tile '%s' subtile (%d,%d) size (%d,%d)\n",
+                             terrain_tile->getName(),
+                             subtile_pixel_coord.x, subtile_pixel_coord.y,
+                             subtile_resolution.x, subtile_resolution.y);
+                scheduled_any = true;
+            }
+        }
+    }
+
+    if (!scheduled_any)
+    {
+        Log::warning("[TerrainManipulator] Compute sculpt found no terrain subtile intersections.\n");
+    }
+
+    return scheduled_any;
 }
 
 /* --- SetTerrainAlbedoImmediate ---
@@ -466,7 +970,25 @@ void TerrainManipulator::OnTextureDraw(
     BrushOperationData operation = operation_it->second;
     m_pending_operations.erase(operation_it);
 
-    if (operation.albedo_image)
+    if (operation.height_image && operation.alpha_image)
+    {
+        auto height_texture = Texture::create();
+        auto alpha_texture = Texture::create();
+        if (!height_texture || !alpha_texture ||
+            !height_texture->create(operation.height_image) ||
+            !alpha_texture->create(operation.alpha_image))
+        {
+            Log::warning("[TerrainManipulator] Failed to create overwrite textures for terrain height update.\n");
+        }
+        else
+        {
+            Log::message("[TerrainManipulator] Applying direct overwrite height image (%d x %d)\n",
+                         operation.height_image->getWidth(), operation.height_image->getHeight());
+            SetTerrainHeightImmediate(nullptr, guid, id, buffer, coord, data_mask,
+                                      height_texture, alpha_texture, true);
+        }
+    }
+    else if (operation.albedo_image)
     {
         SetTerrainAlbedoImmediate(nullptr, guid, id, buffer, coord, data_mask, operation.albedo_image);
     }
@@ -552,6 +1074,7 @@ void TerrainManipulator::ApplyBrush(
     if (operation.modify_heights)
     {
         brush_material->setTexture("terrain_height", buffer->getHeight());
+        brush_material->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
         brush_material->setParameterFloat("height", operation.brush_height);
     }
 
@@ -566,6 +1089,7 @@ void TerrainManipulator::ApplyBrush(
 
     // Unbind textures
     brush_material->setTexture("terrain_height", nullptr);
+    brush_material->setTexture("terrain_opacity_height", nullptr);
     brush_material->setTexture("terrain_albedo", nullptr);
 }
 
@@ -1047,6 +1571,11 @@ void UiPanelTerrain::onApplyPullTerrain()
     double brush_size_val = spin_brush_size_->value();
     double flat_distance  = spin_flat_distance_->value();
     double falloff_dist   = spin_falloff_distance_->value();
+    const double brush_radius = std::max(brush_size_val * 0.5, flat_distance + falloff_dist);
+    const double brush_diameter = std::max(brush_size_val, brush_radius * 2.0);
+    const double flat_ratio = brush_radius > 0.0
+        ? std::clamp(flat_distance / brush_radius, 0.0, 1.0)
+        : 1.0;
 
     logMessage(QString("Surface: '%1', Brush: %2, Flat: %3, Falloff: %4")
         .arg(QString::fromStdString(surface_name))
@@ -1059,9 +1588,10 @@ void UiPanelTerrain::onApplyPullTerrain()
         return;
     }
 
-    MaterialPtr brush_material = TerrainManipulator::getCircularTerrainBrushWithFalloff(0.5);
-    if (!brush_material)
-        logMessage("WARNING: Could not create brush material. Using tile approach.");
+    MaterialPtr pull_brush_material = TerrainManipulator::getCircularTerrainBrushWithFalloff(
+        flat_ratio);
+    if (!pull_brush_material)
+        logMessage("WARNING: Brush material unavailable, falling back to tile-based terrain fill.");
 
     progress_bar_->setValue(10);
     int total = (int)selected.size();
@@ -1075,11 +1605,51 @@ void UiPanelTerrain::onApplyPullTerrain()
         if (node->getType() == Node::OBJECT_MESH_STATIC)
         {
             auto oms = static_ptr_cast<ObjectMeshStatic>(node);
+            const double smoothing_strength = spin_smooth_strength_->value();
 
             int num_surfaces = oms->getNumSurfaces();
             logMessage(QString("  Surfaces (%1):").arg(num_surfaces));
             for (int si = 0; si < num_surfaces; si++)
                 logMessage(QString("    [%1] '%2'").arg(si).arg(oms->getSurfaceName(si)));
+
+            auto processTileForPull = [&](LandscapeLayerMapPtr lmap, ObjectSurface obj_surface) -> bool
+            {
+                auto tile_res = lmap->getResolution();
+                ImagePtr heights_image = Image::create();
+                heights_image->create2D(tile_res.x, tile_res.y, Image::FORMAT_RGBA32F);
+
+                Image::Pixel zero_pixel;
+                zero_pixel.f.r = 0.0f;
+                zero_pixel.f.g = 0.0f;
+                zero_pixel.f.b = 0.0f;
+                zero_pixel.f.a = 0.0f;
+                for (int x = 0; x < tile_res.x; ++x)
+                {
+                    for (int y = 0; y < tile_res.y; ++y)
+                        heights_image->set2D(x, y, zero_pixel);
+                }
+
+                std::map<int, int> height_data;
+                if (!GetSurfaceHeightsForTerrainHeightmap(lmap, obj_surface, heights_image, height_data))
+                    return false;
+
+                logMessage(QString("  Modified %1 points").arg(height_data.size()));
+                smoothTerrainHeights(lmap, heights_image, height_data, flat_distance, falloff_dist);
+
+                if (smoothing_strength > 0.0)
+                    smoothTerrainHeights(lmap, heights_image, height_data,
+                                         flat_distance * smoothing_strength,
+                                         falloff_dist * smoothing_strength);
+
+                if (plugin_->getManipulator()->SetTerrainHeight(lmap, heights_image))
+                {
+                    logMessage("  Tile updated.");
+                    return true;
+                }
+
+                logMessage("  WARNING: Failed to apply tile update.");
+                return false;
+            };
 
             int surface_id = oms->findSurface(surface_name.c_str());
 
@@ -1087,17 +1657,18 @@ void UiPanelTerrain::onApplyPullTerrain()
             {
                 logMessage(QString("  Found surface '%1' (id=%2)")
                     .arg(QString::fromStdString(surface_name)).arg(surface_id));
-
-                if (brush_material)
+                if (pull_brush_material)
                 {
-                    logMessage("  Using brush-based terrain modification...");
+                    logMessage(QString("  Using brush-based terrain leveling (diameter %1, flat ratio %2)...")
+                                   .arg(brush_diameter)
+                                   .arg(flat_ratio, 0, 'f', 2));
                     plugin_->getManipulator()->RaiseTerrainToSurface(
-                        node, surface_name,
-                        dvec2(brush_size_val, brush_size_val), brush_material);
+                        node, surface_name, dvec2(brush_diameter, brush_diameter), pull_brush_material);
                 }
                 else
                 {
-                    logMessage("  Using tile-based terrain modification...");
+                    logMessage("  Using tile-based terrain modification with smoothing...");
+
                     ObjectSurface obj_surface = std::make_pair(
                         static_ptr_cast<Object>(oms), surface_id);
 
@@ -1109,26 +1680,7 @@ void UiPanelTerrain::onApplyPullTerrain()
                             continue;
 
                         logMessage(QString("  Terrain tile %1...").arg(t));
-                        auto tile_res = lmap->getResolution();
-                        ImagePtr heights_image = Image::create();
-                        heights_image->create2D(tile_res.x, tile_res.y, Image::FORMAT_RGBA32F);
-
-                        Image::Pixel zp; zp.f.r=0; zp.f.g=0; zp.f.b=0; zp.f.a=0;
-                        for (int x = 0; x < tile_res.x; x++)
-                            for (int y = 0; y < tile_res.y; y++)
-                                heights_image->set2D(x, y, zp);
-
-                        std::map<int,int> height_data;
-                        if (GetSurfaceHeightsForTerrain(lmap, obj_surface, heights_image, height_data))
-                        {
-                            logMessage(QString("  Modified %1 points").arg(height_data.size()));
-                            smoothTerrainHeights(lmap, heights_image, height_data,
-                                                 flat_distance, falloff_dist);
-                            if (plugin_->getManipulator()->SetTerrainHeight(lmap, heights_image))
-                                logMessage("  Tile updated.");
-                            else
-                                logMessage("  WARNING: Failed to apply tile update (brush material missing).");
-                        }
+                        processTileForPull(lmap, obj_surface);
                     }
                 }
             }
@@ -1148,12 +1700,44 @@ void UiPanelTerrain::onApplyPullTerrain()
                             matched = true;
                             logMessage(QString("  Regex matched: '%1' (id=%2)")
                                 .arg(QString::fromStdString(sn)).arg(s));
-                            if (brush_material)
-                                plugin_->getManipulator()->RaiseTerrainToSurface(
-                                    node, sn, dvec2(brush_size_val, brush_size_val), brush_material);
                         }
                     }
-                    if (!matched)
+                    if (matched)
+                    {
+                        if (pull_brush_material)
+                        {
+                            logMessage(QString("  Using brush-based terrain leveling (diameter %1, flat ratio %2)...")
+                                           .arg(brush_diameter)
+                                           .arg(flat_ratio, 0, 'f', 2));
+                            plugin_->getManipulator()->RaiseTerrainToSurface(
+                                node, surface_name, dvec2(brush_diameter, brush_diameter), pull_brush_material);
+                        }
+                        else
+                        {
+                            logMessage("  Using tile-based terrain modification with smoothing...");
+                            for (int s = 0; s < oms->getNumSurfaces(); s++)
+                            {
+                                std::string sn = oms->getSurfaceName(s);
+                                if (!std::regex_search(sn, rx))
+                                    continue;
+
+                                ObjectSurface obj_surface = std::make_pair(
+                                    static_ptr_cast<Object>(oms), s);
+
+                                for (int t = 0; t < terrain->getNumChildren(); t++)
+                                {
+                                    auto lmap = checked_ptr_cast<LandscapeLayerMap>(terrain->getChild(t));
+                                    if (!lmap) continue;
+                                    if (!lmap->getWorldBoundBox().insideValid(oms->getWorldBoundBox()))
+                                        continue;
+
+                                    logMessage(QString("  Terrain tile %1...").arg(t));
+                                    processTileForPull(lmap, obj_surface);
+                                }
+                            }
+                        }
+                    }
+                    else
                         logMessage("  WARNING: No surfaces matched. Check names above.");
                 }
                 catch (const std::regex_error& e)
@@ -1488,7 +2072,7 @@ void UiPanelTerrain::onSmoothTerrain()
                     heights_image->set2D(x, y, zp);
 
             std::map<int,int> height_data;
-            if (GetSurfaceHeightsForTerrain(lmap, obj_surface, heights_image, height_data))
+            if (GetSurfaceHeightsForTerrainHeightmap(lmap, obj_surface, heights_image, height_data))
             {
                 for (int p = 0; p < passes; p++)
                     smoothTerrainHeights(lmap, heights_image, height_data,

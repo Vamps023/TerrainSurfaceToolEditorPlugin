@@ -7,6 +7,7 @@ BaseBrushMaterial brush <var_prefix=var texture_prefix=tex>
 	Texture2D terrain_height <source=procedural shared=0> if[data_mask & (1 << 0)]
 	Texture2D terrain_opacity_height <source=procedural shared=0> if[data_mask & (1 << 0)]
 	Texture2D terrain_mask <source=procedural shared=0>
+	Texture2D terrain_preview <source=procedural shared=0>
 
 	Texture2D new_height <source=procedural>
 	Texture2D new_alpha <source=procedural>

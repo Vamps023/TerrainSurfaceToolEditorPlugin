@@ -84,6 +84,8 @@ public:
     {
         Unigine::MaterialPtr brush_material;
         Unigine::ImagePtr    albedo_image;  // For direct albedo overwrite
+        Unigine::ImagePtr    height_image;  // For direct height overwrite
+        Unigine::ImagePtr    alpha_image;   // Opacity/alpha companion for direct height overwrite
         float                brush_height;
         float                brush_size;
         float                brush_rotation;
@@ -103,9 +105,22 @@ public:
                                 Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material);
     void RaiseTerrainToBoundingBox(Unigine::NodePtr node, Unigine::Math::dvec2 brush_size,
                                    Unigine::MaterialPtr brush_material);
+    bool RaiseTerrainToSurfacesCompute(const std::vector<Unigine::NodePtr>& nodes,
+                                       const std::string& surface_pattern,
+                                       double flat_distance, double falloff_distance,
+                                       double smoothing_strength, double bias = 0.0);
 
     // Height image operations
     bool SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
+    void SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
+                                   Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
+                                   int data_mask, Unigine::TexturePtr height_texture,
+                                   bool overwrite_with_32bit_float_data);
+    void SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
+                                   Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
+                                   int data_mask, Unigine::TexturePtr height_texture,
+                                   Unigine::TexturePtr alpha_texture,
+                                   bool overwrite_with_32bit_float_data);
 
     // Mask image operations
     bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::NodePtr node, Unigine::ImagePtr mask_image, Unigine::Math::dvec2 brush_size, int mask_index);
@@ -117,6 +132,7 @@ public:
     bool   IsTerrainManipulationInProgress() const;
     size_t NumberOfRemainingOperations() const;
     void   BlockBrushOperations(bool block);
+    void   SetBlockOperationCount(int count);
 
     // Brush material creation
     static Unigine::MaterialPtr getCircularTerrainBrushWithFalloff(double falloff, double padding = 0,
@@ -152,6 +168,7 @@ private:
     bool m_in_progress = false;
     bool m_operations_blocked = false;
     int  m_lock_count = 0;
+    int  m_async_operations_count = 0;
     Unigine::EventConnectionId m_event_connection_id = nullptr;
 };
 
@@ -497,6 +514,70 @@ inline bool GetSurfaceHeightsForTerrain(Unigine::LandscapeLayerMapPtr terrain_ti
                         pix.f.r = pt.z; pix.f.g = pt.z; pix.f.b = pt.z; pix.f.a = 1.0f;
                         // Flip Y coordinate for correct image positioning
                         heights_image->set2D(x, res.y - 1 - y, pix);
+                        modified = true;
+                        height_data[index] = index;
+                    }
+                }
+            }
+        }
+    }
+    return modified;
+}
+
+// Heightmap variant used by terrain sculpt/smooth paths.
+// This keeps image coordinates aligned with height_data indexing so the
+// smoothing pass can propagate heights correctly across the tile.
+inline bool GetSurfaceHeightsForTerrainHeightmap(Unigine::LandscapeLayerMapPtr terrain_tile,
+    ObjectSurface object_surface, Unigine::ImagePtr heights_image,
+    std::map<int, int>& height_data)
+{
+    using namespace Unigine::Math;
+    auto iworld = terrain_tile->getIWorldTransform();
+    auto res = terrain_tile->getResolution();
+    auto size = terrain_tile->getSize();
+    auto step = size / Vec2(res.x, res.y);
+    bool modified = false;
+
+    Unigine::Vector<dvec3> verts_ws;
+    size_t num_verts = appendBaseVerts(object_surface, verts_ws);
+
+    for (int i = 2; i < (int)num_verts; i += 3)
+    {
+        Vec3 lv1 = iworld * Vec3(verts_ws[i]);
+        Vec3 lv2 = iworld * Vec3(verts_ws[i - 1]);
+        Vec3 lv3 = iworld * Vec3(verts_ws[i - 2]);
+        Vec3 tv1 = Vec3(lv1.x, lv1.y, 0.0);
+        Vec3 tv2 = Vec3(lv2.x, lv2.y, 0.0);
+        Vec3 tv3 = Vec3(lv3.x, lv3.y, 0.0);
+
+        int xg1 = int(lv1.x / step.x), yg1 = int(lv1.y / step.y);
+        int xg2 = int(lv2.x / step.x), yg2 = int(lv2.y / step.y);
+        int xg3 = int(lv3.x / step.x), yg3 = int(lv3.y / step.y);
+        int mn_x = std::max(0, std::min({xg1, xg2, xg3}));
+        int mn_y = std::max(0, std::min({yg1, yg2, yg3}));
+        int mx_x = std::min(res.x - 1, std::max({xg1, xg2, xg3}));
+        int mx_y = std::min(res.y - 1, std::max({yg1, yg2, yg3}));
+
+        for (int x = mn_x; x <= mx_x; x++)
+        {
+            if (x < 0 || x >= res.x) continue;
+            for (int y = mn_y; y <= mx_y; y++)
+            {
+                if (y < 0 || y >= res.y) continue;
+                int index = x + res.x * y;
+                if (heights_image->get2D(x, y).f.a <= 0.0f)
+                {
+                    double u, v;
+                    if (pointInTriangle(Vec3((x + 0.5f) * step.x, (y + 0.5f) * step.y, 0.0f),
+                        tv1, tv2, tv3, u, v) == 1)
+                    {
+                        Vec3 pt = lv1 + ((lv3 - lv1) * (float)u) + ((lv2 - lv1) * (float)v);
+                        Unigine::Image::Pixel pix;
+                        pix.f.r = pt.z;
+                        pix.f.g = pt.z;
+                        pix.f.b = pt.z;
+                        pix.f.a = 1.0f;
+                        heights_image->set2D(x, y, pix);
                         modified = true;
                         height_data[index] = index;
                     }

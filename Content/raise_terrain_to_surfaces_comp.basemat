@@ -1,0 +1,274 @@
+BaseMaterial <var_prefix=var texture_prefix=tex node=none hidden=1>
+{
+	// int width=0
+	// int height=0
+	
+	Pass post
+	{
+		Compute=
+		#{
+			// #TODO: Use double precision by splitting up the invocation of this compute shader into 
+			// a series of smaller passes to prevent TDR Timeout
+			// So far using this algorithm with double precision is too expensive for 4k terrain tiles
+
+			#include <core/materials/shaders/render/common.h>
+			
+			struct ConfigBuffer
+			{
+				double4x4 tile_world_transform;
+				double4x4 tile_inv_world_transform;
+				uint triangle_count;
+				uint vertex_count;
+				uint2 tile_resolution;
+        uint2 subtile_pixel_coord;
+        uint2 subtile_resolution;
+				float flat_distance;
+				float falloff_distance;
+				float bias;
+				float rational;
+				float2 tile_size;
+				float2 tile_coord_to_position;
+			};
+			
+			struct VertexBuffer
+			{
+				double4 raw_vertex;
+			};
+			
+			struct GroupBuffer
+			{
+                int offset_x;
+                int offset_y;
+                int threads_x;
+                int threads_y;
+                int threads_lower_x;
+                int threads_upper_x;
+                int threads_lower_y;
+                int threads_upper_y;
+			};
+			
+			INIT_TEXTURE(0, TERRAIN_HEIGHT_INPUT_TEXTURE)
+			INIT_TEXTURE(1, TERRAIN_OPACITY_INPUT_TEXTURE)
+			INIT_RW_STRUCTURED_BUFFER(0, ConfigBuffer, _config)
+			INIT_RW_STRUCTURED_BUFFER(3, VertexBuffer, _vertices)
+			INIT_RW_STRUCTURED_BUFFER(4, GroupBuffer, _group)
+			INIT_W_TEXTURE(1, W_TEX_HEIGHT, r32f, float)
+			INIT_W_TEXTURE(2, W_TEX_ALPHA, r32f, float)
+
+			float3x3 read_triangle(uint index)
+			{
+				double3 a = _vertices[index * 3 + 0].raw_vertex.xyz;
+				double3 b = _vertices[index * 3 + 1].raw_vertex.xyz;
+				double3 c = _vertices[index * 3 + 2].raw_vertex.xyz;
+				return float3x3(float3(a), float3(b), float3(c));
+			}
+
+			float read_terrain_height(int index, uint2 coord)
+			{
+				float terrain_height = TEXTURE_FETCH(TERRAIN_HEIGHT_INPUT_TEXTURE, coord).x;
+				return terrain_height;
+			}
+
+			float read_terrain_opacity(int index, uint2 coord)
+			{
+				float terrain_opacity = TEXTURE_FETCH(TERRAIN_OPACITY_INPUT_TEXTURE, coord).x;
+				return terrain_opacity;
+			}
+
+			float smoothstep_rational( float x, float n )
+			{
+				return pow(x,n)/(pow(x,n)+pow(1.0-x,n));
+			}
+
+			float dot2( in float2 v ) { return dot(v,v); }
+			float dot2( in float3 v ) { return dot(v,v); }
+			float ndot( in float2 a, in float2 b ) { return a.x*b.x - a.y*b.y; }
+
+			float udTriangle( float3 p, float3 a, float3 b, float3 c )
+			{
+				float3 ba = b - a;
+				float3 pa = p - a;
+				float3 cb = c - b;
+				float3 pb = p - b;
+				float3 ac = a - c;
+				float3 pc = p - c;
+				float3 nor = cross( ba, ac );
+
+				return sqrt(
+					(sign(dot(cross(ba,nor),pa)) +
+					 sign(dot(cross(cb,nor),pb)) +
+					 sign(dot(cross(ac,nor),pc))<2.0)
+					?
+					min( min(
+					dot2(ba*clamp(dot(ba,pa)/dot2(ba),0.0,1.0)-pa),
+					dot2(cb*clamp(dot(cb,pb)/dot2(cb),0.0,1.0)-pb) ),
+					dot2(ac*clamp(dot(ac,pc)/dot2(ac),0.0,1.0)-pc) )
+					:
+					dot(nor,pa)*dot(nor,pa)/dot2(nor) );
+			}
+
+			float sdSphere( float3 p, float s )
+			{
+				return length(p) - s;
+			}
+
+			float3 nearest_point_to_triangle(float3x3 T, float3 p)
+			{
+				float3 vertex_a = T[0];
+				float3 vertex_b = T[1];
+				float3 vertex_c = T[2];
+
+				float3 edge_1 = vertex_b - vertex_a;
+				float3 edge_2 = vertex_c - vertex_a;
+
+				float3 plane_normal = normalize(cross(edge_1, edge_2));
+
+				float signed_distance = dot(p - vertex_a, plane_normal);
+
+				float3 intersection_point = p - signed_distance * plane_normal;
+
+				return intersection_point;
+			}
+
+			// Set 32x32 threads in one group
+			#define NUM_GROUP_X 32
+			#define NUM_GROUP_Y 32
+			MAIN_COMPUTE_BEGIN(NUM_GROUP_X, NUM_GROUP_Y, 1)
+				
+				// Using snake_case for struct type and instance name
+				ConfigBuffer config_data = _config[0];
+
+				uint i = GROUP_ID.x * NUM_GROUP_X + GROUP_THREAD_ID.x;
+				uint j = GROUP_ID.y * NUM_GROUP_Y + GROUP_THREAD_ID.y;
+				
+				i += _group[0].offset_x;
+				j += _group[0].offset_y;
+
+				uint2 DEBUG = uint2(i, j);
+				
+				if(i < config_data.subtile_resolution.x && j < config_data.subtile_resolution.y)
+				{
+					uint x = i;
+					uint y = config_data.subtile_resolution.y - j - 1;
+					uint index = j * config_data.subtile_resolution.y + i;
+					
+					uint2 tile_coordinate = uint2(x, y) + config_data.subtile_pixel_coord;
+					float2 tile_position = float2(tile_coordinate) * config_data.tile_coord_to_position;
+					
+					double3 p = mul(transpose(config_data.tile_world_transform), double4(tile_position, double(0.0), double(1.0))).xyz;
+        	
+					float d = 1000000.0f;
+					uint nearest_triangle_index = config_data.triangle_count;
+					{
+						float nearest_triangle_distance = 1000000.0f;
+						for(uint triangle_index = 0; triangle_index < config_data.triangle_count; triangle_index++)
+						{
+							float3x3 current_triangle = read_triangle(triangle_index);
+							float current_triangle_dist = udTriangle( // Updated function call and variable name
+								float3(p.xy, 0.0f),
+								float3(current_triangle[0].xy, 0.0f),
+								float3(current_triangle[1].xy, 0.0f),
+								float3(current_triangle[2].xy, 0.0f)); // SDF against terrain and geometry is calculated in 2D perspective, Z-up removed
+							if(current_triangle_dist < nearest_triangle_distance)
+							{
+								nearest_triangle_index = triangle_index;
+								nearest_triangle_distance = current_triangle_dist;
+							}
+							d = min(d, current_triangle_dist);
+						}
+					}
+    
+					float old_terrain_height = read_terrain_height(index, uint2(x, y));
+					float old_terrain_opacity = read_terrain_opacity(index, uint2(x, y));
+
+					// calculate nearest SDF geometry Z height
+					float geometry_height = old_terrain_height;
+					{
+						if(nearest_triangle_index < config_data.triangle_count)
+						{
+							float3x3 current_triangle = read_triangle(nearest_triangle_index);
+							float3 point_on_triangle_plane = nearest_point_to_triangle(current_triangle, float3(p.xy, 0.0f));
+							geometry_height = point_on_triangle_plane.z;
+						}
+					}
+
+					
+					//// calculate from nearest SDF intersection Z value
+					//float new_terrain_height = old_terrain_height;
+					//float new_terrain_opacity = 1.0f;
+					//{
+					//	float flat = config_data.flat_distance;
+					//	float falloff = config_data.falloff_distance;
+					//	float bias = config_data.bias;
+					//	float rational = config_data.rational;
+					//	float max_distance = flat + falloff;
+					//
+					//	if (d < flat)
+					//	{
+					//		new_terrain_height = geometry_height - bias;
+					//		new_terrain_opacity = 1.0f;
+					//	}
+					//	else if(d < max_distance) // Using max_distance
+					//	{
+					//		float weight = (d - flat) / falloff;
+					//		float blend = rational > 0.0 ? smoothstep_rational(weight, rational) : weight;
+					//		new_terrain_opacity = 1.0 - blend;
+					//		new_terrain_height = geometry_height - bias;
+					//		//new_terrain_height = lerp(geometry_height - bias, old_terrain_height, blend);
+					//	}
+					//	else
+					//	{
+					//		new_terrain_opacity = old_terrain_opacity;
+					//	}
+					//	//else
+					//	//{
+					//	//	new_terrain_opacity = 1.0f - clamp(d / max_distance, 0.0f, 1.0f);
+					//	//}
+					//}
+
+					float new_terrain_height = old_terrain_height;
+					float new_terrain_opacity = old_terrain_opacity;
+					
+					float flat = config_data.flat_distance;
+					float falloff = config_data.falloff_distance;
+					float bias = config_data.bias;
+					float rational = config_data.rational;
+					float fixup = 2.0f;
+					float max_distance = flat + falloff;
+					float max_distance_fixup = flat + falloff + fixup;
+					
+					if (d < flat)
+					{
+						new_terrain_height = geometry_height;
+						new_terrain_opacity = 1.0f;
+					}
+					else if(d < max_distance) // Using max_distance
+					{
+						new_terrain_height = geometry_height;
+						float weight = (d - flat) / falloff;
+						float blend = rational > 0.0 ? smoothstep_rational(weight, rational) : weight;
+						new_terrain_opacity = 1.0 - blend;
+					}
+					else if(d < max_distance_fixup) // Using max_distance
+					{
+						if(old_terrain_opacity == 0.0f)
+						{
+							new_terrain_height = geometry_height;
+							new_terrain_opacity = 0.0f;
+						}
+					}
+
+					if(old_terrain_opacity > 0.0f)
+						new_terrain_height = lerp(old_terrain_height, new_terrain_height, new_terrain_opacity);
+					new_terrain_opacity = max(old_terrain_opacity, new_terrain_opacity);
+
+					// Write
+					TEXTURE_W_STORE(W_TEX_HEIGHT, int2(x, y), new_terrain_height);
+					TEXTURE_W_STORE(W_TEX_ALPHA, int2(x, y), new_terrain_opacity);
+				}
+
+				
+			MAIN_COMPUTE_END
+		#}
+	}
+}

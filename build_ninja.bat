@@ -29,6 +29,7 @@ echo Copying plugin metadata...
 copy "%PROJECT_ROOT%source\TerrainSurfaceToolEditorPlugin.json" "%DEPLOY_DIR%\" >nul 2>&1
 echo Copying plugin content assets...
 copy "%PROJECT_ROOT%Content\*.basebrush" "%PROJECT_DATA_DIR%\" >nul 2>&1
+copy "%PROJECT_ROOT%Content\*.basemat" "%PROJECT_DATA_DIR%\" >nul 2>&1
 
 REM Setup VS2022 Developer Command Prompt
 echo Setting up VS2022 Developer Command Prompt...
@@ -98,6 +99,11 @@ if exist "%PROJECT_DATA_DIR%\terrain_brush_r32f_overwrite.basebrush" (
 ) else (
     echo Brush assets not found in %PROJECT_DATA_DIR%
 )
+if exist "%PROJECT_DATA_DIR%\raise_terrain_to_surfaces_comp.basemat" (
+    echo Compute material deployed to %PROJECT_DATA_DIR%
+) else (
+    echo Compute material not found in %PROJECT_DATA_DIR%
+)
 echo.
 echo Plugin Structure (GantryLabelTool Pattern):
 echo %DEPLOY_DIR%
@@ -107,6 +113,7 @@ echo.
 echo Project Data Assets:
 echo %PROJECT_DATA_DIR%
 echo terrain_brush_r32f_overwrite.basebrush
+echo raise_terrain_to_surfaces_comp.basemat
 echo.
 echo To use the plugin:
 echo 1. Start Unigine Editor2
