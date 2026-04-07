@@ -936,8 +936,6 @@ void UiPanelTerrain::onApplyPaintMask()
         {
             auto lmap = checked_ptr_cast<LandscapeLayerMap>(terrain->getChild(t));
             if (!lmap) continue;
-            if (!lmap->getWorldBoundBox().insideValid(oms->getWorldBoundBox()))
-                continue;
 
             auto tile_res = lmap->getResolution();
 
