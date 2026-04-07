@@ -82,20 +82,20 @@ public:
     struct BrushOperationData
     {
         Unigine::MaterialPtr brush_material;
-        float                brush_height = 0.0f;
-        float                brush_size = 1.0f;
-        float                brush_rotation = 0.0f;
-        float                brush_opacity = 1.0f;
+        Unigine::ImagePtr    albedo_image;  // For direct albedo overwrite
+        float                brush_height;
+        float                brush_size;
+        float                brush_rotation;
+        float                brush_opacity = 1;
         HeightBlendMode      height_blend_mode = HeightBlendMode::Alpha;
         bool                 modify_heights = false;
         bool                 modify_albedo = false;
-        bool                 modify_mask = false;
-        std::string          mask_name;
     };
 
     // Public terrain operations
-    void RaiseTerrainToSurface(Unigine::NodePtr node, std::string surface_name,
-                               Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material);
+    void RaiseTerrainToSurface(Unigine::NodePtr node, const std::string& surface_name,
+                               Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material,
+                               bool target_albedo = false);
     void RaiseTerrainToVertices(std::vector<Unigine::Math::dvec3> verts,
                                 Unigine::Math::dvec2 brush_size, Unigine::MaterialPtr brush_material);
     void RaiseTerrainToBoundingBox(Unigine::NodePtr node, Unigine::Math::dvec2 brush_size,
@@ -105,7 +105,10 @@ public:
     bool SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
 
     // Mask image operations
-    bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, const std::string& mask_name, Unigine::ImagePtr mask_image);
+    bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::NodePtr node, Unigine::ImagePtr mask_image, Unigine::Math::dvec2 brush_size);
+    void SetTerrainAlbedoImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
+                                   Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
+                                   int data_mask, Unigine::ImagePtr albedo_image);
 
     // Status
     bool   IsTerrainManipulationInProgress() const;
@@ -120,7 +123,8 @@ public:
 private:
     void RaiseTerrainToVertex(Unigine::Math::dvec3 vertex, Unigine::Math::dvec2 brush_size,
                               Unigine::MaterialPtr brush_material, float brush_rotation = 0,
-                              Unigine::LandscapeLayerMapPtr map_to_operate = nullptr);
+                              Unigine::LandscapeLayerMapPtr map_to_operate = nullptr,
+                              bool target_albedo = false);
 
     void CalculateDrawingRegion(Unigine::Math::dvec3 brush_local_position,
                                 Unigine::Math::quat brush_local_rotation,
@@ -133,10 +137,6 @@ private:
                                              Unigine::Math::ivec2 pixel_coord,
                                              Unigine::Math::ivec2 resolution);
 
-    void PerformMaskOperation(Unigine::LandscapeLayerMapPtr lmap,
-                              Unigine::Math::ivec2 pixel_coord,
-                              Unigine::Math::ivec2 resolution);
-
     void OnTextureDraw(Unigine::UGUID guid, int id, Unigine::LandscapeTexturesPtr buffer,
                        Unigine::Math::ivec2 coord, int data_mask);
 
@@ -148,10 +148,6 @@ private:
     bool m_operations_blocked = false;
     int  m_lock_count = 0;
     Unigine::EventConnectionId m_event_connection_id = nullptr;
-
-    // Pending mask operations
-    std::map<int, Unigine::ImagePtr> m_pending_mask_images;
-    std::map<int, std::string> m_pending_mask_names;
 };
 
 /* ========================================================================
@@ -494,7 +490,8 @@ inline bool GetSurfaceHeightsForTerrain(Unigine::LandscapeLayerMapPtr terrain_ti
                         Vec3 pt = lv1 + ((lv3 - lv1) * (float)u) + ((lv2 - lv1) * (float)v);
                         Unigine::Image::Pixel pix;
                         pix.f.r = pt.z; pix.f.g = pt.z; pix.f.b = pt.z; pix.f.a = 1.0f;
-                        heights_image->set2D(x, y, pix);
+                        // Flip Y coordinate for correct image positioning
+                        heights_image->set2D(x, res.y - 1 - y, pix);
                         modified = true;
                         height_data[index] = index;
                     }
@@ -503,6 +500,78 @@ inline bool GetSurfaceHeightsForTerrain(Unigine::LandscapeLayerMapPtr terrain_ti
         }
     }
     return modified;
+}
+
+// Smooth terrain heights around tracked points
+inline void smoothTerrainHeights(Unigine::LandscapeLayerMapPtr tile,
+    Unigine::ImagePtr heights_image, std::map<int, int>& height_data,
+    double flat_distance, double fall_off_distance);
+
+// Apply falloff to mask image alpha channel
+inline void applyMaskFalloff(Unigine::ImagePtr mask_image, std::map<int, int>& mask_data,
+    double falloff_distance)
+{
+    using namespace Unigine::Math;
+    auto res = Unigine::Math::ivec2(mask_image->getWidth(), mask_image->getHeight());
+    
+    int fall_off_steps = (int)falloff_distance;
+    if (fall_off_steps < 1) fall_off_steps = 1;
+    
+    std::vector<int> indices;
+    for (const auto& [pi, si] : mask_data)
+        indices.push_back(pi);
+    
+    // Create a temporary alpha map
+    std::vector<float> alpha_map(res.x * res.y, 0.0f);
+    
+    // Mark all painted pixels with alpha = 1
+    for (int index : indices)
+    {
+        alpha_map[index] = 1.0f;
+    }
+    
+    // Apply falloff by blending with neighboring pixels
+    for (int index : indices)
+    {
+        int x = index % res.x;
+        int y = index / res.x;
+        
+        // Check neighboring pixels and apply falloff
+        for (int dx = -fall_off_steps; dx <= fall_off_steps; dx++)
+        {
+            for (int dy = -fall_off_steps; dy <= fall_off_steps; dy++)
+            {
+                int nx = x + dx;
+                int ny = y + dy;
+                
+                if (nx < 0 || nx >= res.x || ny < 0 || ny >= res.y)
+                    continue;
+                
+                int neighbor_index = nx + res.x * ny;
+                float distance = sqrtf((float)(dx * dx + dy * dy));
+                float falloff = 1.0f - Unigine::Math::clamp(distance / (float)falloff_distance, 0.0f, 1.0f);
+                
+                // Take the maximum alpha value
+                alpha_map[neighbor_index] = Unigine::Math::max(alpha_map[neighbor_index], falloff);
+            }
+        }
+    }
+    
+    // Apply the alpha map to the image (with Y-flip)
+    for (int x = 0; x < res.x; x++)
+    {
+        for (int y = 0; y < res.y; y++)
+        {
+            int index = x + res.x * y;
+            if (alpha_map[index] > 0.0f)
+            {
+                Unigine::Image::Pixel pix = mask_image->get2D(x, y);
+                pix.f.a = alpha_map[index];
+                // Flip Y when setting the pixel
+                mask_image->set2D(x, res.y - 1 - y, pix);
+            }
+        }
+    }
 }
 
 // Smooth terrain heights around tracked points

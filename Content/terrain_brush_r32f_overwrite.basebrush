@@ -1,0 +1,70 @@
+BaseBrushMaterial brush <var_prefix=var texture_prefix=tex>
+{
+	ArrayInt masks_order <internal=true size=20>
+	Mask32 data_mask <internal=true>
+	StateInt data_mask <internal=true>
+	
+	Texture2D terrain_height <source=procedural shared=0> if[data_mask & (1 << 0)]
+	Texture2D terrain_opacity_height <source=procedural shared=0> if[data_mask & (1 << 0)]
+
+	Texture2D new_height <source=procedural>
+	Texture2D new_alpha <source=procedural>
+	
+	Pass brush_height
+	{
+		Fragment=
+		#{
+			#define UNDEF_FRAGMENT_OUT
+			#include <core/materials/shaders/render/common.h>
+			
+			STRUCT_FRAG_BEGIN
+				INIT_MRT(float, 0)
+				INIT_MRT(float, 1)
+			STRUCT_FRAG_END
+			
+			MAIN_FRAG_BEGIN(FRAGMENT_IN)
+				
+				int2 scr_coord = toInt2(IN_POSITION.xy);
+				
+				float height = TEXTURE_FETCH(tex_new_height, scr_coord).x;
+				float opacity = TEXTURE_FETCH(tex_new_alpha, scr_coord).x;
+				OUT_MRT(0) = height;
+				OUT_MRT(1) = opacity;
+				
+			MAIN_FRAG_END
+		#}
+	}
+	
+	Expression brush =
+	#{
+		ObjectLandscapeTerrain terrain = engine.landscape.getActiveTerrain();
+		
+		int masks_order[20];
+		for(int i = 0; i < 20; i++)
+		{
+			int order = terrain.getDetailMask(i).getRenderOrder();
+			masks_order[order] = i;
+		}
+		setParameterArray("masks_order", masks_order);
+		
+		RenderTarget render_target = engine.render.getTemporaryRenderTarget();
+		render_target.unbindAll();
+		
+		// render height
+		if (getTexture("terrain_height") != NULL)
+		{
+			Texture tex_terrain_height = getTexture("terrain_height");
+			Texture tex_terrain_opacity_height = getTexture("terrain_opacity_height");
+			render_target.bindColorTexture(0, tex_terrain_height);
+			render_target.bindColorTexture(1, tex_terrain_opacity_height);
+			render_target.enable();
+			{
+				renderPass("brush_height");
+			}
+			render_target.disable();
+			render_target.unbindAll();
+		}
+		
+		engine.render.releaseTemporaryRenderTarget(render_target);
+	#}
+}
