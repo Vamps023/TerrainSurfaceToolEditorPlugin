@@ -52,6 +52,7 @@
 #include <string>
 #include <regex>
 #include <map>
+#include <unordered_map>
 #include <cassert>
 #include <cmath>
 #include <algorithm>
@@ -147,7 +148,7 @@ private:
     void ApplyBrush(BrushOperationData const& operation, Unigine::UGUID guid, int id,
                     Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord, int data_mask);
 
-    std::queue<BrushOperationData> m_brush_buffer;
+    std::unordered_map<int, BrushOperationData> m_pending_operations;
     bool m_in_progress = false;
     bool m_operations_blocked = false;
     int  m_lock_count = 0;

@@ -53,7 +53,8 @@ bool TerrainManipulator::IsTerrainManipulationInProgress() const
 
 size_t TerrainManipulator::NumberOfRemainingOperations() const
 {
-    return m_operations_blocked ? m_brush_buffer.size() + m_lock_count : m_brush_buffer.size();
+    return m_operations_blocked ? m_pending_operations.size() + m_lock_count
+                                : m_pending_operations.size();
 }
 
 void TerrainManipulator::BlockBrushOperations(bool block)
@@ -230,9 +231,11 @@ void TerrainManipulator::RaiseTerrainToVertex(
     data.modify_mask = false;
     data.mask_index = 0;
 
-    m_brush_buffer.push(data);
-    PerformTerrainManipulationOperation(closest_lmap, drawing_region_coord, drawing_region_size,
-                                        Landscape::FLAGS_DATA_HEIGHT | Landscape::FLAGS_DATA_ALBEDO);
+    int operation_id = Landscape::generateOperationID();
+    m_pending_operations.emplace(operation_id, data);
+    Landscape::asyncTextureDraw(operation_id, closest_lmap->getGUID(), drawing_region_coord,
+                                drawing_region_size,
+                                Landscape::FLAGS_DATA_HEIGHT | Landscape::FLAGS_DATA_ALBEDO);
 
     // Handle brush operations that overfill a terrain chunk boundary
     auto max_x = closest_lmap->getSize().x - drawing_region_size.x;
@@ -281,9 +284,10 @@ bool TerrainManipulator::SetTerrainHeight(LandscapeLayerMapPtr lmap, ImagePtr he
     data.modify_mask = false;
     data.mask_index = 0;
 
-    m_brush_buffer.push(data);
-    PerformTerrainManipulationOperation(lmap, ivec2{ 0, 0 }, lmap->getResolution(),
-                                        Landscape::FLAGS_DATA_HEIGHT | Landscape::FLAGS_DATA_ALBEDO);
+    int operation_id = Landscape::generateOperationID();
+    m_pending_operations.emplace(operation_id, data);
+    Landscape::asyncTextureDraw(operation_id, lmap->getGUID(), ivec2{ 0, 0 }, lmap->getResolution(),
+                                Landscape::FLAGS_DATA_HEIGHT | Landscape::FLAGS_DATA_ALBEDO);
     return true;
 }
 
@@ -381,8 +385,9 @@ bool TerrainManipulator::SetTerrainMask(
         return false;
     }
 
-    m_brush_buffer.push(data);
-    PerformTerrainManipulationOperation(lmap, ivec2{ 0, 0 }, tile_res, mask_flag);
+    int operation_id = Landscape::generateOperationID();
+    m_pending_operations.emplace(operation_id, data);
+    Landscape::asyncTextureDraw(operation_id, lmap->getGUID(), ivec2{ 0, 0 }, tile_res, mask_flag);
 
     Log::message("[TerrainManipulator] Mask painting queued for landscape mask slot %d\n", mask_index);
     return true;
@@ -427,6 +432,10 @@ void TerrainManipulator::PerformTerrainManipulationOperation(
     LandscapeLayerMapPtr lmap, ivec2 pixel_coord, ivec2 resolution, int flags)
 {
     int id = Landscape::generateOperationID();
+    if (m_pending_operations.find(id) == m_pending_operations.end())
+    {
+        // The caller must have inserted the pending operation before dispatch.
+    }
     Landscape::asyncTextureDraw(id, lmap->getGUID(), pixel_coord, resolution, flags);
 }
 
@@ -448,19 +457,22 @@ void TerrainManipulator::OnTextureDraw(
     if (m_operations_blocked)
         return;
 
-    if (m_brush_buffer.size() > 0)
+    auto operation_it = m_pending_operations.find(id);
+    if (operation_it == m_pending_operations.end())
     {
-        BrushOperationData operation = m_brush_buffer.front();
-        m_brush_buffer.pop();
+        return;
+    }
 
-        if (operation.albedo_image)
-        {
-            SetTerrainAlbedoImmediate(nullptr, guid, id, buffer, coord, data_mask, operation.albedo_image);
-        }
-        else
-        {
-            ApplyBrush(operation, guid, id, buffer, coord, data_mask);
-        }
+    BrushOperationData operation = operation_it->second;
+    m_pending_operations.erase(operation_it);
+
+    if (operation.albedo_image)
+    {
+        SetTerrainAlbedoImmediate(nullptr, guid, id, buffer, coord, data_mask, operation.albedo_image);
+    }
+    else
+    {
+        ApplyBrush(operation, guid, id, buffer, coord, data_mask);
     }
 
     if (NumberOfRemainingOperations() == 0)
