@@ -54,6 +54,8 @@
 #include <regex>
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
+#include <memory>
 #include <cassert>
 #include <cmath>
 #include <algorithm>
@@ -113,11 +115,11 @@ public:
 
     // Height image operations
     bool SetTerrainHeight(Unigine::LandscapeLayerMapPtr lmap, Unigine::ImagePtr height_image);
-    void SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
+    bool SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
                                    Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
                                    int data_mask, Unigine::TexturePtr height_texture,
                                    bool overwrite_with_32bit_float_data);
-    void SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
+    bool SetTerrainHeightImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
                                    Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
                                    int data_mask, Unigine::TexturePtr height_texture,
                                    Unigine::TexturePtr alpha_texture,
@@ -127,7 +129,7 @@ public:
     bool SetTerrainMask(Unigine::LandscapeLayerMapPtr lmap, Unigine::NodePtr node,
                         Unigine::ImagePtr mask_image, Unigine::Math::dvec2 brush_size,
                         int mask_index);
-    void SetTerrainAlbedoImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
+    bool SetTerrainAlbedoImmediate(Unigine::LandscapeLayerMapPtr lmap, Unigine::UGUID guid, int id,
                                    Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord,
                                    int data_mask, Unigine::ImagePtr albedo_image);
 
@@ -136,6 +138,7 @@ public:
     size_t NumberOfRemainingOperations() const;
     void   BlockBrushOperations(bool block);
     void   SetBlockOperationCount(int count);
+    void   FlushPendingLandscapeSaves();
 
     // Brush material creation
     static Unigine::MaterialPtr getCircularTerrainBrushWithFalloff(double falloff, double padding = 0,
@@ -144,6 +147,11 @@ public:
     static Unigine::MaterialPtr getMaskTerrainBrush(Unigine::ImagePtr mask_image);
 
 private:
+    struct ComputeOperationContext
+    {
+        Unigine::EventConnections connections;
+    };
+
     void RaiseTerrainToVertex(Unigine::Math::dvec3 vertex, Unigine::Math::dvec2 brush_size,
                               Unigine::MaterialPtr brush_material, float brush_rotation = 0,
                               Unigine::LandscapeLayerMapPtr map_to_operate = nullptr,
@@ -164,15 +172,25 @@ private:
     void OnTextureDraw(Unigine::UGUID guid, int id, Unigine::LandscapeTexturesPtr buffer,
                        Unigine::Math::ivec2 coord, int data_mask);
 
-    void ApplyBrush(BrushOperationData const& operation, Unigine::UGUID guid, int id,
+    bool ApplyBrush(BrushOperationData const& operation, Unigine::UGUID guid, int id,
                     Unigine::LandscapeTexturesPtr buffer, Unigine::Math::ivec2 coord, int data_mask);
+    void OnSaveFile(const Unigine::UGUID& guid, int id, const char* path_new_diff, const char* path_old_diff);
+    void MarkLandscapeFileDirty(const Unigine::UGUID& guid);
+    void QueueLandscapeSave(const Unigine::UGUID& guid);
+    static std::string GuidKey(const Unigine::UGUID& guid);
 
     std::unordered_map<int, BrushOperationData> m_pending_operations;
+    std::unordered_map<int, std::string> m_pending_save_operations;
+    std::unordered_map<int, std::shared_ptr<ComputeOperationContext>> m_compute_operation_contexts;
+    std::unordered_map<std::string, Unigine::UGUID> m_dirty_layer_maps;
+    std::unordered_set<std::string> m_layer_maps_saving;
     bool m_in_progress = false;
     bool m_operations_blocked = false;
     int  m_lock_count = 0;
     int  m_async_operations_count = 0;
     Unigine::EventConnectionId m_event_connection_id = nullptr;
+    Unigine::EventConnectionId m_save_event_connection_id = nullptr;
+    Unigine::EventConnectionId m_pre_world_save_connection_id = nullptr;
 };
 
 /* ========================================================================

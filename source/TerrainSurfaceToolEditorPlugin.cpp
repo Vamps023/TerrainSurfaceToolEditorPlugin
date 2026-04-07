@@ -81,15 +81,117 @@ TerrainManipulator::TerrainManipulator()
         [this](const UGUID& guid, int id, const LandscapeTexturesPtr& buffer,
             const Math::ivec2& coord, int data_mask)
         { OnTextureDraw(guid, id, buffer, coord, data_mask); });
+
+    m_save_event_connection_id = Landscape::getEventSaveFile().connect(
+        [this](const UGUID& guid, int id, const char* path_new_diff, const char* path_old_diff)
+        { OnSaveFile(guid, id, path_new_diff, path_old_diff); });
+
+    m_pre_world_save_connection_id = World::getEventPreWorldSave().connect(
+        [this](const char*)
+        { FlushPendingLandscapeSaves(); });
 }
 
 TerrainManipulator::~TerrainManipulator()
 {
+    FlushPendingLandscapeSaves();
+
     if (m_event_connection_id)
     {
         Landscape::getEventTextureDraw().disconnect(m_event_connection_id);
         m_event_connection_id = nullptr;
     }
+
+    if (m_save_event_connection_id)
+    {
+        Landscape::getEventSaveFile().disconnect(m_save_event_connection_id);
+        m_save_event_connection_id = nullptr;
+    }
+
+    if (m_pre_world_save_connection_id)
+    {
+        World::getEventPreWorldSave().disconnect(m_pre_world_save_connection_id);
+        m_pre_world_save_connection_id = nullptr;
+    }
+
+    m_pending_operations.clear();
+    m_pending_save_operations.clear();
+    m_dirty_layer_maps.clear();
+    m_layer_maps_saving.clear();
+    m_compute_operation_contexts.clear();
+    m_async_operations_count = 0;
+    m_lock_count = 0;
+    m_operations_blocked = false;
+}
+
+std::string TerrainManipulator::GuidKey(const UGUID& guid)
+{
+    return guid.isValid() ? std::string(guid.getString()) : std::string();
+}
+
+void TerrainManipulator::QueueLandscapeSave(const UGUID& guid)
+{
+    if (!guid.isValid())
+        return;
+
+    const std::string key = GuidKey(guid);
+    if (key.empty() || m_layer_maps_saving.count(key) > 0)
+        return;
+
+    const int save_operation_id = Landscape::generateOperationID();
+    m_pending_save_operations[save_operation_id] = key;
+    m_layer_maps_saving.insert(key);
+    m_dirty_layer_maps.erase(key);
+
+    Landscape::asyncSaveFile(save_operation_id, guid);
+    Log::message("[TerrainManipulator] Queued landscape save for %s\n", key.c_str());
+}
+
+void TerrainManipulator::MarkLandscapeFileDirty(const UGUID& guid)
+{
+    if (!guid.isValid())
+        return;
+
+    const std::string key = GuidKey(guid);
+    if (key.empty())
+        return;
+
+    m_dirty_layer_maps[key] = guid;
+    QueueLandscapeSave(guid);
+}
+
+void TerrainManipulator::FlushPendingLandscapeSaves()
+{
+    std::vector<UGUID> pending_guids;
+    pending_guids.reserve(m_dirty_layer_maps.size());
+    for (const auto& [key, guid] : m_dirty_layer_maps)
+    {
+        if (m_layer_maps_saving.count(key) == 0 && guid.isValid())
+            pending_guids.push_back(guid);
+    }
+
+    for (const auto& guid : pending_guids)
+        QueueLandscapeSave(guid);
+}
+
+void TerrainManipulator::OnSaveFile(const UGUID& guid, int id, const char* path_new_diff, const char* path_old_diff)
+{
+    UNIGINE_UNUSED(path_new_diff);
+    UNIGINE_UNUSED(path_old_diff);
+
+    const auto pending_it = m_pending_save_operations.find(id);
+    if (pending_it == m_pending_save_operations.end())
+        return;
+
+    const std::string key = pending_it->second;
+    m_pending_save_operations.erase(pending_it);
+    m_layer_maps_saving.erase(key);
+
+    Log::message("[TerrainManipulator] Landscape save finished for %s\n",
+                 key.empty() ? guid.getString() : key.c_str());
+
+    const auto dirty_it = m_dirty_layer_maps.find(key);
+    if (dirty_it != m_dirty_layer_maps.end())
+        QueueLandscapeSave(dirty_it->second);
 }
 
 bool TerrainManipulator::IsTerrainManipulationInProgress() const
@@ -366,17 +468,17 @@ bool TerrainManipulator::SetTerrainHeight(LandscapeLayerMapPtr lmap, ImagePtr he
     return true;
 }
 
-void TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
+bool TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
                                                    LandscapeTexturesPtr buffer, ivec2 coord,
                                                    int data_mask, TexturePtr height_texture,
                                                    bool overwrite_with_32bit_float_data)
 {
-    SetTerrainHeightImmediate(lmap, guid, id, buffer, coord, data_mask,
-                              height_texture, buffer ? buffer->getOpacityHeight() : nullptr,
-                              overwrite_with_32bit_float_data);
+    return SetTerrainHeightImmediate(lmap, guid, id, buffer, coord, data_mask,
+                                     height_texture, buffer ? buffer->getOpacityHeight() : nullptr,
+                                     overwrite_with_32bit_float_data);
 }
 
-void TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
+bool TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
                                                    LandscapeTexturesPtr buffer, ivec2 coord,
                                                    int data_mask, TexturePtr height_texture,
                                                    TexturePtr alpha_texture,
@@ -389,12 +491,12 @@ void TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UG
     UNIGINE_UNUSED(data_mask);
 
     if (!buffer || !height_texture || !alpha_texture)
-        return;
+        return false;
 
     if (!overwrite_with_32bit_float_data)
     {
         Log::warning("[TerrainManipulator] Non-overwrite immediate terrain writes are not implemented.\n");
-        return;
+        return false;
     }
 
     std::string base_brush_mat_name = "terrain_brush_r32f_overwrite.basebrush";
@@ -402,7 +504,7 @@ void TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UG
     if (!file_guid.isValid())
     {
         Log::warning("[TerrainManipulator] Could not find brush material: %s\n", base_brush_mat_name.c_str());
-        return;
+        return false;
     }
 
     auto brush_material = Materials::findMaterialByFileGUID(file_guid)->inherit();
@@ -415,6 +517,7 @@ void TerrainManipulator::SetTerrainHeightImmediate(LandscapeLayerMapPtr lmap, UG
     brush_material->setTexture("terrain_opacity_height", nullptr);
     brush_material->setTexture("new_height", nullptr);
     brush_material->setTexture("new_alpha", nullptr);
+    return true;
 }
 
 bool TerrainManipulator::RaiseTerrainToSurfacesCompute(const std::vector<NodePtr>& nodes,
@@ -528,14 +631,14 @@ bool TerrainManipulator::RaiseTerrainToSurfacesCompute(const std::vector<NodePtr
                 m_async_operations_count++;
                 SetBlockOperationCount(m_async_operations_count);
 
-                EventConnections* connections = new EventConnections();
+                auto compute_context = std::make_shared<ComputeOperationContext>();
+                m_compute_operation_contexts[operation_id] = compute_context;
                 Landscape::getEventTextureDraw().connect(
-                    *connections,
+                    compute_context->connections,
                     [this,
                      subtile_pixel_coord,
                      subtile_resolution,
                      compute_material,
-                     connections,
                      terrain_guid,
                      operation_id,
                      terrain_tile,
@@ -562,11 +665,12 @@ bool TerrainManipulator::RaiseTerrainToSurfacesCompute(const std::vector<NodePtr
                                      has_height_texture ? 1 : 0,
                                      has_opacity_texture ? 1 : 0);
 
-                        auto finish_operation = [this, connections]()
+                        auto finish_operation = [this, operation_id]()
                         {
-                            m_async_operations_count--;
+                            if (m_async_operations_count > 0)
+                                m_async_operations_count--;
                             SetBlockOperationCount(m_async_operations_count);
-                            delete connections;
+                            m_compute_operation_contexts.erase(operation_id);
                         };
 
                         TexturePtr output_texture_gpu = Texture::create();
@@ -767,11 +871,20 @@ bool TerrainManipulator::RaiseTerrainToSurfacesCompute(const std::vector<NodePtr
                         RenderState::setTexture(RenderState::BIND_ALL, 0, nullptr);
                         RenderState::setTexture(RenderState::BIND_ALL, 1, nullptr);
 
-                        SetTerrainHeightImmediate(
+                        const bool wrote_height = SetTerrainHeightImmediate(
                             terrain_tile, invoke_guid, invoke_id, buffer, coord, data_mask,
                             output_texture_gpu, output_alpha_texture_gpu, true);
-                        Log::message("[TerrainManipulator] Compute height writeback complete for tile '%s'\n",
-                                     terrain_tile->getName());
+                        if (wrote_height)
+                        {
+                            Log::message("[TerrainManipulator] Compute height writeback complete for tile '%s'\n",
+                                         terrain_tile->getName());
+                            MarkLandscapeFileDirty(invoke_guid);
+                        }
+                        else
+                        {
+                            Log::warning("[TerrainManipulator] Compute height writeback failed for tile '%s'\n",
+                                         terrain_tile->getName());
+                        }
 
                         finish_operation();
                     });
@@ -802,23 +915,33 @@ bool TerrainManipulator::RaiseTerrainToSurfacesCompute(const std::vector<NodePtr
 /* --- SetTerrainAlbedoImmediate ---
  * Direct albedo texture overwrite using terrain_brush_r32f_overwrite.basebrush pattern
  * This bypasses the UV-based sampling of brush.basebrush for direct pixel mapping */
-void TerrainManipulator::SetTerrainAlbedoImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
+bool TerrainManipulator::SetTerrainAlbedoImmediate(LandscapeLayerMapPtr lmap, UGUID guid, int id,
                                                    LandscapeTexturesPtr buffer, ivec2 coord,
                                                    int data_mask, ImagePtr albedo_image)
 {
+    UNIGINE_UNUSED(lmap);
+    UNIGINE_UNUSED(guid);
+    UNIGINE_UNUSED(id);
+    UNIGINE_UNUSED(coord);
+    UNIGINE_UNUSED(data_mask);
+
     std::string base_brush_mat_name = "terrain_brush_r32f_overwrite.basebrush";
 
     auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(base_brush_mat_name.c_str()));
     if (!file_guid.isValid())
     {
         Log::warning("[TerrainManipulator] Could not find brush material: %s\n", base_brush_mat_name.c_str());
-        return;
+        return false;
     }
 
     auto brush_material = Materials::findMaterialByFileGUID(file_guid)->inherit();
 
     auto albedo_texture = Texture::create();
-    albedo_texture->setImage(albedo_image);
+    if (!albedo_texture || !albedo_texture->create(albedo_image))
+    {
+        Log::warning("[TerrainManipulator] Failed to create overwrite texture for terrain albedo update.\n");
+        return false;
+    }
 
     brush_material->setTexture("terrain_height", buffer->getAlbedo());
     brush_material->setTexture("new_height", albedo_texture);
@@ -827,6 +950,7 @@ void TerrainManipulator::SetTerrainAlbedoImmediate(LandscapeLayerMapPtr lmap, UG
 
     brush_material->setTexture("terrain_height", nullptr);
     brush_material->setTexture("new_height", nullptr);
+    return true;
 }
 
 /* ========================================================================
@@ -973,6 +1097,7 @@ void TerrainManipulator::OnTextureDraw(
 
     BrushOperationData operation = operation_it->second;
     m_pending_operations.erase(operation_it);
+    bool applied = false;
 
     if (operation.height_image && operation.alpha_image)
     {
@@ -988,17 +1113,22 @@ void TerrainManipulator::OnTextureDraw(
         {
             Log::message("[TerrainManipulator] Applying direct overwrite height image (%d x %d)\n",
                          operation.height_image->getWidth(), operation.height_image->getHeight());
-            SetTerrainHeightImmediate(nullptr, guid, id, buffer, coord, data_mask,
-                                      height_texture, alpha_texture, true);
+            applied = SetTerrainHeightImmediate(nullptr, guid, id, buffer, coord, data_mask,
+                                               height_texture, alpha_texture, true);
         }
     }
     else if (operation.albedo_image)
     {
-        SetTerrainAlbedoImmediate(nullptr, guid, id, buffer, coord, data_mask, operation.albedo_image);
+        applied = SetTerrainAlbedoImmediate(nullptr, guid, id, buffer, coord, data_mask, operation.albedo_image);
     }
     else
     {
-        ApplyBrush(operation, guid, id, buffer, coord, data_mask);
+        applied = ApplyBrush(operation, guid, id, buffer, coord, data_mask);
+    }
+
+    if (applied)
+    {
+        MarkLandscapeFileDirty(guid);
     }
 
     if (NumberOfRemainingOperations() == 0)
@@ -1017,11 +1147,17 @@ void TerrainManipulator::OnTextureDraw(
  *   - buffer->getMask(mask_index) returns the TexturePtr for that slot
  *   - bind it to "terrain_mask" in the brush material
  *   - runExpression writes the result back into that mask channel */
-void TerrainManipulator::ApplyBrush(
+bool TerrainManipulator::ApplyBrush(
     BrushOperationData const& operation, UGUID guid, int id,
     LandscapeTexturesPtr buffer, ivec2 coord, int data_mask)
 {
+    UNIGINE_UNUSED(guid);
+    UNIGINE_UNUSED(id);
+    UNIGINE_UNUSED(coord);
+
     auto brush_material = operation.brush_material;
+    if (!brush_material || !buffer)
+        return false;
 
     // ----------------------------------------------------------------
     // Real landscape mask channel (Unigine 2.18)
@@ -1038,7 +1174,7 @@ void TerrainManipulator::ApplyBrush(
         {
             Log::warning("[TerrainManipulator] Missing packed mask page textures for logical mask %d.\n",
                          operation.mask_index);
-            return;
+            return false;
         }
 
         for (int page_index = 0; page_index < 5; ++page_index)
@@ -1073,7 +1209,7 @@ void TerrainManipulator::ApplyBrush(
             brush_material->setTexture(mask_name.c_str(), nullptr);
             brush_material->setTexture(opacity_name.c_str(), nullptr);
         }
-        return;
+        return true;
     }
 
     // ----------------------------------------------------------------
@@ -1105,6 +1241,7 @@ void TerrainManipulator::ApplyBrush(
     brush_material->setTexture("terrain_height", nullptr);
     brush_material->setTexture("terrain_opacity_height", nullptr);
     brush_material->setTexture("terrain_albedo", nullptr);
+    return true;
 }
 
 /* --- getCircularTerrainBrushWithFalloff ---
@@ -1120,6 +1257,12 @@ MaterialPtr TerrainManipulator::getCircularTerrainBrushWithFalloff(
     }
 
     auto brush_material = Materials::findMaterialByFileGUID(file_guid)->inherit();
+    auto opacity_texture_index = brush_material->findTexture("opacity");
+    if (opacity_texture_index < 0)
+    {
+        Log::warning("Brush material '%s' has no 'opacity' texture slot\n", DEFAULT.c_str());
+        return nullptr;
+    }
 
     ImagePtr image = Image::create();
     int width = 512;
@@ -1167,15 +1310,7 @@ MaterialPtr TerrainManipulator::getCircularTerrainBrushWithFalloff(
         }
     }
 
-    UGUID gui = UGUID();
-    gui.generate();
-
-    std::string temp_folder = std::string(FileSystem::getRootMount()->getDataPath()) + "/world_builder/temp/";
-    std::stringstream name_ss;
-    name_ss << temp_folder << gui.getString() << ".png";
-    image->save(name_ss.str().c_str());
-    brush_material->setTexturePath("opacity", name_ss.str().c_str());
-
+    brush_material->setTextureImage(opacity_texture_index, image);
     return brush_material;
 }
 
@@ -1317,6 +1452,9 @@ void TerrainSurfaceToolEditorPlugin::shutdown()
 
     if (ui_panel_)
         WindowManager::remove(ui_panel_.get());
+
+    if (terrain_manipulator_)
+        terrain_manipulator_->FlushPendingLandscapeSaves();
 
     ui_panel_.reset();
     terrain_manipulator_.reset();
