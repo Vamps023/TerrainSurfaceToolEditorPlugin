@@ -7,8 +7,10 @@
 #include <QMenu>
 
 #include <UnigineNode.h>
+#include <UnigineObjects.h>
 
 #include <memory>
+#include <unordered_set>
 #include <vector>
 
 class LandscapeSaveManager;
@@ -31,6 +33,11 @@ public:
     void shutdown() override;
 
     std::vector<Unigine::NodePtr> getSelectedMeshNodes() const;
+    std::vector<Unigine::ObjectLandscapeTerrainPtr> getLandscapeTerrains() const;
+    Unigine::ObjectLandscapeTerrainPtr getLandscapeTerrainById(int node_id) const;
+    std::vector<Unigine::LandscapeLayerMapPtr> getLandscapeLayerMaps(
+        const Unigine::ObjectLandscapeTerrainPtr& terrain) const;
+    Unigine::LandscapeLayerMapPtr getLandscapeLayerMapById(int node_id) const;
     TerrainManipulator* manipulator() const { return terrain_manipulator_.get(); }
 
 private slots:
@@ -38,6 +45,12 @@ private slots:
 
 private:
     void setupMenu();
+    static void collectLandscapeTerrainsRecursive(const Unigine::NodePtr& node,
+                                                  std::vector<Unigine::ObjectLandscapeTerrainPtr>& out_terrains,
+                                                  std::unordered_set<int>& visited_node_ids);
+    static void collectLandscapeLayerMapsRecursive(const Unigine::NodePtr& node,
+                                                   std::vector<Unigine::LandscapeLayerMapPtr>& out_layer_maps,
+                                                   std::unordered_set<int>& visited_node_ids);
 
     std::unique_ptr<LandscapeSaveManager> save_manager_;
     std::unique_ptr<TerrainManipulator> terrain_manipulator_;

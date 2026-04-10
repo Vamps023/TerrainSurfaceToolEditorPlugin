@@ -13,6 +13,7 @@ TerrainToolPanel::TerrainToolPanel(UnigineEditor::TerrainSurfaceToolEditorPlugin
     , plugin_(plugin)
 {
     setupUi();
+    refreshLandscapeTileOptions(false);
 
     setWindowTitle("Terrain Surface Tool");
     resize(400, 700);
@@ -54,6 +55,16 @@ void TerrainToolPanel::setupUi()
     edit_surface_name_->setToolTip("Surface name or regex pattern to match on selected meshes");
     surface_layout->addWidget(edit_surface_name_);
     main_layout->addWidget(surface_group);
+
+    auto* landscape_group = new QGroupBox("Landscape Target", this);
+    auto* landscape_layout = new QVBoxLayout(landscape_group);
+    auto* tile_row = new QHBoxLayout();
+    tile_row->addWidget(new QLabel("Tile:", this));
+    combo_landscape_tile_ = new QComboBox(this);
+    combo_landscape_tile_->setToolTip("Choose a specific LandscapeLayerMap tile, or leave it on All Tiles.");
+    tile_row->addWidget(combo_landscape_tile_);
+    landscape_layout->addLayout(tile_row);
+    main_layout->addWidget(landscape_group);
 
     auto* mask_group = new QGroupBox("Landscape Mask Slot", this);
     auto* mask_layout = new QHBoxLayout(mask_group);
@@ -137,6 +148,12 @@ void TerrainToolPanel::setupUi()
     main_layout->addStretch();
 }
 
+void TerrainToolPanel::showEvent(QShowEvent* event)
+{
+    refreshLandscapeTileOptions(true);
+    QWidget::showEvent(event);
+}
+
 void TerrainToolPanel::appendLog(const QString& message)
 {
     if (!status_text_)
@@ -159,8 +176,61 @@ TerrainBrushSettings TerrainToolPanel::currentSettings() const
     return settings;
 }
 
+void TerrainToolPanel::refreshLandscapeTileOptions(bool preserve_selection)
+{
+    if (!combo_landscape_tile_ || !plugin_)
+        return;
+
+    const QVariant previous_selection = preserve_selection ? combo_landscape_tile_->currentData() : QVariant();
+    const auto terrains = plugin_->getLandscapeTerrains();
+    const auto terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
+
+    combo_landscape_tile_->blockSignals(true);
+    combo_landscape_tile_->clear();
+    combo_landscape_tile_->addItem("All Tiles", -1);
+
+    if (terrain)
+    {
+        const auto layer_maps = plugin_->getLandscapeLayerMaps(terrain);
+        for (const auto& layer_map : layer_maps)
+        {
+            if (!layer_map)
+                continue;
+
+            QString tile_name = QString::fromUtf8(layer_map->getName());
+            if (tile_name.trimmed().isEmpty())
+                tile_name = QString("LandscapeLayerMap %1").arg(layer_map->getID());
+            combo_landscape_tile_->addItem(tile_name, layer_map->getID());
+        }
+    }
+
+    int selection_index = 0;
+    if (previous_selection.isValid())
+    {
+        const int previous_index = combo_landscape_tile_->findData(previous_selection);
+        if (previous_index >= 0)
+            selection_index = previous_index;
+    }
+    combo_landscape_tile_->setCurrentIndex(selection_index);
+    combo_landscape_tile_->blockSignals(false);
+}
+
+LandscapeLayerMapPtr TerrainToolPanel::currentLandscapeTile() const
+{
+    if (!plugin_ || !combo_landscape_tile_)
+        return nullptr;
+
+    bool ok = false;
+    const int tile_id = combo_landscape_tile_->currentData().toInt(&ok);
+    if (!ok || tile_id < 0)
+        return nullptr;
+
+    return plugin_->getLandscapeLayerMapById(tile_id);
+}
+
 void TerrainToolPanel::onApplyPullTerrain()
 {
+    refreshLandscapeTileOptions(true);
     appendLog("=== Pull Terrain To Surface ===");
     progress_bar_->setValue(0);
 
@@ -185,11 +255,21 @@ void TerrainToolPanel::onApplyPullTerrain()
     }
 
     const TerrainBrushSettings settings = currentSettings();
+    const auto terrains = plugin_->getLandscapeTerrains();
+    const ObjectLandscapeTerrainPtr target_terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
+    const LandscapeLayerMapPtr target_tile = currentLandscapeTile();
+    if (!target_terrain)
+    {
+        appendLog("ERROR: No landscape selected.");
+        return;
+    }
     appendLog(QString("Found %1 mesh node(s)").arg(selected_nodes.size()));
     progress_bar_->setValue(10);
 
     const bool queued = plugin_->manipulator()->pullTerrainToSurface(
         selected_nodes,
+        target_terrain,
+        target_tile,
         surface_name,
         settings,
         [this](const std::string& message)
@@ -203,6 +283,7 @@ void TerrainToolPanel::onApplyPullTerrain()
 
 void TerrainToolPanel::onApplyToMask()
 {
+    refreshLandscapeTileOptions(true);
     appendLog("=== Apply to Landscape Mask ===");
     progress_bar_->setValue(0);
 
@@ -235,11 +316,21 @@ void TerrainToolPanel::onApplyToMask()
     }
 
     const TerrainBrushSettings settings = currentSettings();
+    const auto terrains = plugin_->getLandscapeTerrains();
+    const ObjectLandscapeTerrainPtr target_terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
+    const LandscapeLayerMapPtr target_tile = currentLandscapeTile();
+    if (!target_terrain)
+    {
+        appendLog("ERROR: No landscape selected.");
+        return;
+    }
     appendLog(QString("Found %1 mesh node(s)").arg(selected_nodes.size()));
     progress_bar_->setValue(10);
 
     const bool queued = plugin_->manipulator()->applyLandscapeMask(
         selected_nodes,
+        target_terrain,
+        target_tile,
         surface_name,
         settings,
         mask_index,
@@ -255,6 +346,7 @@ void TerrainToolPanel::onApplyToMask()
 
 void TerrainToolPanel::onResetTerrainHeight()
 {
+    refreshLandscapeTileOptions(true);
     appendLog("=== Reset Terrain Heights ===");
     progress_bar_->setValue(0);
 
@@ -272,8 +364,18 @@ void TerrainToolPanel::onResetTerrainHeight()
     }
 
     progress_bar_->setValue(10);
+    const auto terrains = plugin_->getLandscapeTerrains();
+    const ObjectLandscapeTerrainPtr target_terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
+    const LandscapeLayerMapPtr target_tile = currentLandscapeTile();
+    if (!target_terrain)
+    {
+        appendLog("ERROR: No landscape selected.");
+        return;
+    }
     const bool queued = plugin_->manipulator()->resetTerrainHeights(
         selected_nodes,
+        target_terrain,
+        target_tile,
         [this](const std::string& message)
         {
             appendLog(QString::fromStdString(message));

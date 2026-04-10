@@ -31,17 +31,23 @@ public:
     ~TerrainManipulator();
 
     bool pullTerrainToSurface(const std::vector<Unigine::NodePtr>& nodes,
+                              const Unigine::ObjectLandscapeTerrainPtr& terrain,
+                              const Unigine::LandscapeLayerMapPtr& target_tile,
                               const std::string& surface_pattern,
                               const TerrainBrushSettings& settings,
                               const LogFn& log);
 
     bool applyLandscapeMask(const std::vector<Unigine::NodePtr>& nodes,
+                            const Unigine::ObjectLandscapeTerrainPtr& terrain,
+                            const Unigine::LandscapeLayerMapPtr& target_tile,
                             const std::string& surface_pattern,
                             const TerrainBrushSettings& settings,
                             int mask_index,
                             const LogFn& log);
 
     bool resetTerrainHeights(const std::vector<Unigine::NodePtr>& nodes,
+                             const Unigine::ObjectLandscapeTerrainPtr& terrain,
+                             const Unigine::LandscapeLayerMapPtr& target_tile,
                              const LogFn& log);
 
     bool isBusy() const;
@@ -85,7 +91,8 @@ private:
     void finishActionScheduling();
     void finalizeActionTransactionsIfIdle();
 
-    static TerrainContext buildTerrainContext();
+    static TerrainContext buildTerrainContext(const Unigine::ObjectLandscapeTerrainPtr& terrain,
+                                             const Unigine::LandscapeLayerMapPtr& target_tile);
     static bool terrainAvailable(TerrainContext& context, const Unigine::Math::dvec2& position);
     static Unigine::LandscapeLayerMapPtr findContainingLayerMap(const TerrainContext& context,
                                                                 const Unigine::Math::dvec3& position);

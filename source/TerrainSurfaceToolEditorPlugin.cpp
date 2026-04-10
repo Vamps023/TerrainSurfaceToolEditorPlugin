@@ -14,6 +14,8 @@
 #include <QtWidgets/QMenuBar>
 
 #include <UnigineLog.h>
+#include <UnigineNodes.h>
+#include <UnigineWorld.h>
 
 using namespace Unigine;
 
@@ -85,6 +87,51 @@ std::vector<NodePtr> TerrainSurfaceToolEditorPlugin::getSelectedMeshNodes() cons
     return SurfaceRasterizer::collectMeshNodesRecursive(root_nodes);
 }
 
+std::vector<ObjectLandscapeTerrainPtr> TerrainSurfaceToolEditorPlugin::getLandscapeTerrains() const
+{
+    std::vector<ObjectLandscapeTerrainPtr> terrains;
+    Vector<NodePtr> root_nodes;
+    World::getRootNodes(root_nodes);
+
+    std::unordered_set<int> visited_node_ids;
+    terrains.reserve(root_nodes.size());
+    for (const auto& root : root_nodes)
+        collectLandscapeTerrainsRecursive(root, terrains, visited_node_ids);
+
+    return terrains;
+}
+
+ObjectLandscapeTerrainPtr TerrainSurfaceToolEditorPlugin::getLandscapeTerrainById(int node_id) const
+{
+    if (node_id < 0)
+        return Landscape::getActiveTerrain();
+
+    auto node = Node::getNode(node_id);
+    return checked_ptr_cast<ObjectLandscapeTerrain>(node);
+}
+
+std::vector<LandscapeLayerMapPtr> TerrainSurfaceToolEditorPlugin::getLandscapeLayerMaps(
+    const ObjectLandscapeTerrainPtr& terrain) const
+{
+    std::vector<LandscapeLayerMapPtr> layer_maps;
+    if (!terrain)
+        return layer_maps;
+
+    std::unordered_set<int> visited_node_ids;
+    collectLandscapeLayerMapsRecursive(terrain, layer_maps, visited_node_ids);
+
+    return layer_maps;
+}
+
+LandscapeLayerMapPtr TerrainSurfaceToolEditorPlugin::getLandscapeLayerMapById(int node_id) const
+{
+    if (node_id < 0)
+        return nullptr;
+
+    auto node = Node::getNode(node_id);
+    return checked_ptr_cast<LandscapeLayerMap>(node);
+}
+
 void TerrainSurfaceToolEditorPlugin::setupMenu()
 {
     vamps_menu_ = WindowManager::findMenu("VampsPlugin");
@@ -110,6 +157,72 @@ void TerrainSurfaceToolEditorPlugin::setupMenu()
 
     if (vamps_menu_)
         vamps_menu_->addAction(terrain_tool_action_);
+}
+
+void TerrainSurfaceToolEditorPlugin::collectLandscapeTerrainsRecursive(
+    const NodePtr& node,
+    std::vector<ObjectLandscapeTerrainPtr>& out_terrains,
+    std::unordered_set<int>& visited_node_ids)
+{
+    if (!node)
+        return;
+
+    const int node_id = node->getID();
+    if (!visited_node_ids.insert(node_id).second)
+        return;
+
+    if (node->getType() == Node::OBJECT_LANDSCAPE_TERRAIN)
+    {
+        auto terrain = checked_ptr_cast<ObjectLandscapeTerrain>(node);
+        if (terrain)
+            out_terrains.push_back(terrain);
+    }
+    else if (node->getType() == Node::NODE_REFERENCE)
+    {
+        auto reference = checked_ptr_cast<NodeReference>(node);
+        if (reference)
+        {
+            auto target = reference->getReference();
+            if (target)
+                collectLandscapeTerrainsRecursive(target, out_terrains, visited_node_ids);
+        }
+    }
+
+    for (int child_index = 0; child_index < node->getNumChildren(); ++child_index)
+        collectLandscapeTerrainsRecursive(node->getChild(child_index), out_terrains, visited_node_ids);
+}
+
+void TerrainSurfaceToolEditorPlugin::collectLandscapeLayerMapsRecursive(
+    const NodePtr& node,
+    std::vector<LandscapeLayerMapPtr>& out_layer_maps,
+    std::unordered_set<int>& visited_node_ids)
+{
+    if (!node)
+        return;
+
+    const int node_id = node->getID();
+    if (!visited_node_ids.insert(node_id).second)
+        return;
+
+    if (node->getType() == Node::LANDSCAPE_LAYER_MAP)
+    {
+        auto layer_map = checked_ptr_cast<LandscapeLayerMap>(node);
+        if (layer_map)
+            out_layer_maps.push_back(layer_map);
+    }
+    else if (node->getType() == Node::NODE_REFERENCE)
+    {
+        auto reference = checked_ptr_cast<NodeReference>(node);
+        if (reference)
+        {
+            auto target = reference->getReference();
+            if (target)
+                collectLandscapeLayerMapsRecursive(target, out_layer_maps, visited_node_ids);
+        }
+    }
+
+    for (int child_index = 0; child_index < node->getNumChildren(); ++child_index)
+        collectLandscapeLayerMapsRecursive(node->getChild(child_index), out_layer_maps, visited_node_ids);
 }
 
 void TerrainSurfaceToolEditorPlugin::openTerrainTool()

@@ -61,6 +61,8 @@ TerrainManipulator::~TerrainManipulator()
 }
 
 bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
+                                              const ObjectLandscapeTerrainPtr& terrain,
+                                              const LandscapeLayerMapPtr& target_tile,
                                               const std::string& surface_pattern,
                                               const TerrainBrushSettings& settings,
                                               const LogFn& log)
@@ -77,7 +79,7 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
         return false;
     }
 
-    TerrainContext terrain_context = buildTerrainContext();
+    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
     if (!terrain_context.terrain)
     {
         if (log)
@@ -194,6 +196,8 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
 }
 
 bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
+                                            const ObjectLandscapeTerrainPtr& terrain,
+                                            const LandscapeLayerMapPtr& target_tile,
                                             const std::string& surface_pattern,
                                             const TerrainBrushSettings& settings,
                                             int mask_index,
@@ -211,7 +215,7 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
         return false;
     }
 
-    TerrainContext terrain_context = buildTerrainContext();
+    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
     if (!terrain_context.terrain)
     {
         if (log)
@@ -269,12 +273,14 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
 }
 
 bool TerrainManipulator::resetTerrainHeights(const std::vector<NodePtr>& nodes,
+                                             const ObjectLandscapeTerrainPtr& terrain,
+                                             const LandscapeLayerMapPtr& target_tile,
                                              const LogFn& log)
 {
     if (nodes.empty())
         return false;
 
-    TerrainContext terrain_context = buildTerrainContext();
+    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
     if (!terrain_context.terrain)
     {
         if (log)
@@ -373,13 +379,20 @@ void TerrainManipulator::finalizeActionTransactionsIfIdle()
     in_progress_ = false;
 }
 
-TerrainManipulator::TerrainContext TerrainManipulator::buildTerrainContext()
+TerrainManipulator::TerrainContext TerrainManipulator::buildTerrainContext(const ObjectLandscapeTerrainPtr& terrain,
+                                                                          const LandscapeLayerMapPtr& target_tile)
 {
     TerrainContext context;
-    context.terrain = Landscape::getActiveTerrain();
+    context.terrain = terrain ? terrain : Landscape::getActiveTerrain();
     context.fetch = LandscapeFetch::create();
     if (!context.terrain)
         return context;
+
+    if (target_tile)
+    {
+        context.layer_maps.push_back(target_tile);
+        return context;
+    }
 
     context.layer_maps.reserve(context.terrain->getNumChildren());
     for (int child_index = 0; child_index < context.terrain->getNumChildren(); ++child_index)

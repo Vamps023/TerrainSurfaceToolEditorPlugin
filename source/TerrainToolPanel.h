@@ -9,6 +9,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QShowEvent>
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -26,6 +27,9 @@ public:
     explicit TerrainToolPanel(UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin);
     ~TerrainToolPanel() override = default;
 
+protected:
+    void showEvent(QShowEvent* event) override;
+
 private slots:
     void onApplyPullTerrain();
     void onApplyToMask();
@@ -35,10 +39,13 @@ private:
     void setupUi();
     void appendLog(const QString& message);
     TerrainBrushSettings currentSettings() const;
+    void refreshLandscapeTileOptions(bool preserve_selection = true);
+    Unigine::LandscapeLayerMapPtr currentLandscapeTile() const;
 
     UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin_ = nullptr;
 
     QLineEdit* edit_surface_name_ = nullptr;
+    QComboBox* combo_landscape_tile_ = nullptr;
     QComboBox* combo_mask_name_ = nullptr;
     QDoubleSpinBox* spin_brush_size_ = nullptr;
     QDoubleSpinBox* spin_flat_distance_ = nullptr;
