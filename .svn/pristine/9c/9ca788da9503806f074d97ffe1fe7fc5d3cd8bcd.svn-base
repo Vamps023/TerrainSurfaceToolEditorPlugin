@@ -1,4 +1,0 @@
-unigine_plugin("terrain_editor_plugin" "terrain_editor" ".")
-target_link_libraries("terrain_editor_plugin" PRIVATE "PluginOrder")
-target_link_libraries("terrain_editor_plugin" PUBLIC "world_builder_plugin")
-target_link_libraries("terrain_editor_plugin" PUBLIC "unigine2_graphics")
