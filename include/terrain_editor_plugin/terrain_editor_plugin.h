@@ -1,6 +1,3 @@
-/// @file      terrain_editor_plugin.h
-/// @author    James Rentoulis
-/// @copyright SYDAC Pty Ltd, 2023
 #pragma once
 
 #include <UnigineMathLib.h>
