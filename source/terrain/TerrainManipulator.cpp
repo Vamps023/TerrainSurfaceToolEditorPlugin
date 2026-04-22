@@ -89,10 +89,12 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
 
     beginActionTransaction();
 
-    const float flat_ratio = safeFlatRatio(settings.flat_distance, settings.falloff_distance, settings.brush_size);
-    const MaterialPtr pull_brush_material = createCircularBrush(flat_ratio);
-    const bool use_brush_path = pull_brush_material != nullptr;
-    const double falloff_flat_distance = effectiveFlatDistance(settings);
+    // Clean rasterization approach:
+    //   1. Rasterize the mesh surface directly into a heightmap (pixels covered by mesh = target height).
+    //   2. Flood-fill outward: Flat Distance = padding at full strength, Falloff Distance = smooth blend.
+    // Brush Size is no longer used here (it only affected the old stamp-mode which caused ring artifacts).
+    const double flat_distance = clampPositive(settings.flat_distance);
+    const double falloff_distance = clampPositive(settings.falloff_distance);
 
     bool queued_any_operation = false;
 
@@ -109,82 +111,44 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
         if (surface_ids.empty())
             continue;
 
+        const WorldBoundBox node_bounds = mesh->getWorldBoundBox();
+
         for (int surface_id : surface_ids)
         {
-            if (use_brush_path)
+            ObjectSurface object_surface = std::make_pair(static_ptr_cast<Object>(mesh), surface_id);
+
+            for (const auto& tile : terrain_context.layer_maps)
             {
-                std::vector<vec3> surface_vertices;
-                std::vector<vec3> midpoints;
-                std::vector<vec3> samples;
-                if (!SurfaceRasterizer::extractSurfaceVerticesWorldSpace(mesh, surface_id, surface_vertices))
+                if (!tile || !tile->getWorldBoundBox().insideValid(node_bounds))
                     continue;
 
-                SurfaceRasterizer::buildMidpointPath(surface_vertices, midpoints);
-                SurfaceRasterizer::samplePolyline(midpoints,
-                                                 sampleSpacingForBrush(settings.brush_size),
-                                                 samples);
-                if (samples.empty())
-                    continue;
-
-                const double brush_radius = std::max(settings.brush_size * 0.5,
-                                                     settings.flat_distance + settings.falloff_distance);
-                const double brush_diameter = std::max(settings.brush_size, brush_radius * 2.0);
-                const dvec2 brush_size_value(brush_diameter, brush_diameter);
-
-                auto calculateDirection = [](const vec3& from, const vec3& to) -> float
-                {
-                    const double angle_radians = std::atan2(static_cast<double>(to.y - from.y),
-                                                            static_cast<double>(to.x - from.x));
-                    return static_cast<float>((angle_radians * 180.0 / M_PI) + 90.0);
-                };
-
-                float brush_rotation = 0.0f;
-                for (size_t sample_index = 0; sample_index < samples.size(); ++sample_index)
-                {
-                    if (sample_index + 1 < samples.size())
-                        brush_rotation = calculateDirection(samples[sample_index], samples[sample_index + 1]);
-
-                    const vec3& sample = samples[sample_index];
-                    raiseTerrainAtPoint(terrain_context,
-                                        dvec3(sample.x, sample.y, sample.z),
-                                        brush_size_value,
-                                        pull_brush_material,
-                                        brush_rotation,
-                                        false,
-                                        nullptr);
-                    queued_any_operation = true;
-                }
-            }
-            else
-            {
-                ObjectSurface object_surface = std::make_pair(static_ptr_cast<Object>(mesh), surface_id);
-                const WorldBoundBox node_bounds = mesh->getWorldBoundBox();
                 SurfaceRasterizer::RasterBuffer raster_buffer;
-
-                for (const auto& tile : terrain_context.layer_maps)
+                if (!SurfaceRasterizer::rasterizeSurfaceHeight(tile, object_surface, raster_buffer))
                 {
-                    if (!tile || !tile->getWorldBoundBox().insideValid(node_bounds))
-                        continue;
-
-                    if (!SurfaceRasterizer::rasterizeSurfaceHeight(tile, object_surface, raster_buffer))
-                        continue;
-
-                    SurfaceRasterizer::applyDistanceFalloff(tile,
-                                                            raster_buffer,
-                                                            falloff_flat_distance,
-                                                            settings.falloff_distance);
-                    if (settings.smoothing_strength > 0.0)
-                    {
-                        SurfaceRasterizer::applyDistanceFalloff(tile,
-                                                                raster_buffer,
-                                                                falloff_flat_distance * settings.smoothing_strength,
-                                                                settings.falloff_distance * settings.smoothing_strength);
-                    }
-
-                    const ImagePtr height_image = SurfaceRasterizer::createHeightImage(raster_buffer);
-                    if (height_image && setTerrainHeight(tile, height_image))
-                        queued_any_operation = true;
+                    if (log)
+                        log("  Tile '" + std::string(tile->getName()) + "': no pixels covered by mesh surface.");
+                    continue;
                 }
+
+                if (log)
+                    log("  Tile '" + std::string(tile->getName()) + "': rasterized "
+                        + std::to_string(raster_buffer.seeds.size()) + " seed pixels.");
+
+                SurfaceRasterizer::applyDistanceFalloff(tile,
+                                                        raster_buffer,
+                                                        flat_distance,
+                                                        falloff_distance);
+
+                // Blend falloff ring with existing terrain height on the CPU
+                // so the GPU brush can simply overwrite the result (the brush
+                // material cannot sample the terrain_height texture itself).
+                SurfaceRasterizer::blendFalloffWithExistingTerrain(tile,
+                                                                   terrain_context.fetch,
+                                                                   raster_buffer);
+
+                const ImagePtr height_image = SurfaceRasterizer::createHeightImage(raster_buffer);
+                if (height_image && setTerrainHeight(tile, height_image))
+                    queued_any_operation = true;
             }
         }
     }
@@ -385,6 +349,8 @@ TerrainManipulator::TerrainContext TerrainManipulator::buildTerrainContext(const
     TerrainContext context;
     context.terrain = terrain ? terrain : Landscape::getActiveTerrain();
     context.fetch = LandscapeFetch::create();
+    if (context.fetch)
+        context.fetch->setUsesHeight(true);
     if (!context.terrain)
         return context;
 

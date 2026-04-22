@@ -4,8 +4,14 @@
 #include "../terrain/TerrainManipulator.h"
 
 #include <QtGui/QPalette>
+#include <QApplication>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QSet>
+#include <QList>
+#include <QStyle>
+#include <QTimer>
+#include <algorithm>
 
 using namespace Unigine;
 
@@ -51,10 +57,10 @@ void TerrainToolPanel::setupUi()
 
     auto* surface_group = new QGroupBox("Surface Filter", this);
     auto* surface_layout = new QHBoxLayout(surface_group);
-    surface_layout->addWidget(new QLabel("Name/Regex:", this));
-    edit_surface_name_ = new QLineEdit("base", this);
-    edit_surface_name_->setToolTip("Surface name or regex pattern to match on selected meshes");
-    surface_layout->addWidget(edit_surface_name_);
+    surface_layout->addWidget(new QLabel("Surface:", this));
+    combo_surface_name_ = new QComboBox(this);
+    combo_surface_name_->setToolTip("Surface name from selected mesh");
+    surface_layout->addWidget(combo_surface_name_);
     main_layout->addWidget(surface_group);
 
     auto* landscape_group = new QGroupBox("Landscape Target", this);
@@ -63,7 +69,13 @@ void TerrainToolPanel::setupUi()
     tile_row->addWidget(new QLabel("Tile:", this));
     combo_landscape_tile_ = new QComboBox(this);
     combo_landscape_tile_->setToolTip("Choose a specific LandscapeLayerMap tile, or leave it on All Tiles.");
-    tile_row->addWidget(combo_landscape_tile_);
+    tile_row->addWidget(combo_landscape_tile_, 1);
+    button_refresh_tiles_ = new QPushButton(this);
+    button_refresh_tiles_->setIcon(QApplication::style()->standardIcon(QStyle::SP_BrowserReload));
+    button_refresh_tiles_->setToolTip("Refresh landscape tiles and surface list");
+    button_refresh_tiles_->setMaximumWidth(32);
+    connect(button_refresh_tiles_, &QPushButton::clicked, this, &TerrainToolPanel::onRefreshLandscapeTiles);
+    tile_row->addWidget(button_refresh_tiles_);
     landscape_layout->addLayout(tile_row);
     main_layout->addWidget(landscape_group);
 
@@ -103,12 +115,12 @@ void TerrainToolPanel::setupUi()
         return spin;
     };
 
-    spin_brush_size_ = addSpinRow("Brush Size:", 0.1, 1000.0, 10.0, 1.0,
-                                  "Brush width in world units");
-    spin_flat_distance_ = addSpinRow("Flat Distance:", 0.0, 500.0, 30.0, 5.0,
-                                     "Flat sculpt distance in world units");
-    spin_falloff_distance_ = addSpinRow("Falloff Distance:", 0.0, 2000.0, 30.0, 5.0,
-                                        "Falloff distance in world units");
+    spin_flat_distance_ = addSpinRow("Flat Distance:", 0.0, 500.0, 5.0, 1.0,
+                                     "Padding (in world units) around mesh kept at the exact\n"
+                                     "mesh height. Set to 0 to blend from mesh edge directly.");
+    spin_falloff_distance_ = addSpinRow("Falloff Distance:", 0.0, 2000.0, 20.0, 1.0,
+                                        "Smooth blend distance (in world units) where terrain\n"
+                                        "transitions from the mesh height back to original.");
     main_layout->addWidget(brush_group);
 
     auto* actions_group = new QGroupBox("Actions", this);
@@ -147,12 +159,88 @@ void TerrainToolPanel::setupUi()
     main_layout->addWidget(status_text_);
 
     main_layout->addStretch();
+
+    selection_check_timer_ = new QTimer(this);
+    selection_check_timer_->setInterval(500);
+    connect(selection_check_timer_, &QTimer::timeout, this, &TerrainToolPanel::checkSelectionChanged);
+    selection_check_timer_->start();
 }
 
 void TerrainToolPanel::showEvent(QShowEvent* event)
 {
     refreshLandscapeTileOptions(true);
+    refreshSurfaceOptions();
     QWidget::showEvent(event);
+}
+
+void TerrainToolPanel::onRefreshLandscapeTiles()
+{
+    refreshLandscapeTileOptions(true);
+    refreshSurfaceOptions();
+    appendLog("Landscape tiles and surface list refreshed.");
+}
+
+void TerrainToolPanel::refreshSurfaceOptions()
+{
+    if (!combo_surface_name_ || !plugin_)
+        return;
+
+    const QString current_text = combo_surface_name_->currentText();
+    combo_surface_name_->blockSignals(true);
+    combo_surface_name_->clear();
+
+    const std::vector<NodePtr> selected_nodes = plugin_->getSelectedMeshNodes();
+    QSet<QString> surface_names;
+
+    for (const auto& node : selected_nodes)
+    {
+        if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
+            continue;
+
+        ObjectMeshStaticPtr mesh = checked_ptr_cast<ObjectMeshStatic>(node);
+        if (!mesh)
+            continue;
+
+        for (int i = 0; i < mesh->getNumSurfaces(); ++i)
+        {
+            QString name = QString::fromUtf8(mesh->getSurfaceName(i));
+            if (!name.isEmpty())
+                surface_names.insert(name);
+        }
+    }
+
+    QList<QString> sorted_names = surface_names.values();
+    std::sort(sorted_names.begin(), sorted_names.end());
+
+    for (const QString& name : sorted_names)
+        combo_surface_name_->addItem(name);
+
+    if (!current_text.isEmpty() && sorted_names.contains(current_text))
+        combo_surface_name_->setCurrentText(current_text);
+    else if (combo_surface_name_->count() > 0)
+        combo_surface_name_->setCurrentIndex(0);
+
+    combo_surface_name_->blockSignals(false);
+}
+
+void TerrainToolPanel::checkSelectionChanged()
+{
+    if (!plugin_)
+        return;
+
+    const std::vector<NodePtr> selected_nodes = plugin_->getSelectedMeshNodes();
+    QSet<int> current_selection_ids;
+    for (const auto& node : selected_nodes)
+    {
+        if (node)
+            current_selection_ids.insert(node->getID());
+    }
+
+    if (current_selection_ids != previous_selection_ids_)
+    {
+        previous_selection_ids_ = current_selection_ids;
+        refreshSurfaceOptions();
+    }
 }
 
 void TerrainToolPanel::appendLog(const QString& message)
@@ -170,7 +258,7 @@ void TerrainToolPanel::appendLog(const QString& message)
 TerrainBrushSettings TerrainToolPanel::currentSettings() const
 {
     TerrainBrushSettings settings;
-    settings.brush_size = spin_brush_size_ ? spin_brush_size_->value() : 10.0;
+    settings.brush_size = 10.0;  // legacy default; only used by mask apply path
     settings.flat_distance = spin_flat_distance_ ? spin_flat_distance_->value() : 30.0;
     settings.falloff_distance = spin_falloff_distance_ ? spin_falloff_distance_->value() : 30.0;
     settings.smoothing_strength = 0.5;
@@ -248,7 +336,7 @@ void TerrainToolPanel::onApplyPullTerrain()
         return;
     }
 
-    const std::string surface_name = edit_surface_name_->text().toStdString();
+    const std::string surface_name = combo_surface_name_->currentText().toStdString();
     if (surface_name.empty())
     {
         appendLog("ERROR: Surface name is empty.");
@@ -301,7 +389,7 @@ void TerrainToolPanel::onApplyToMask()
         return;
     }
 
-    const std::string surface_name = edit_surface_name_->text().toStdString();
+    const std::string surface_name = combo_surface_name_->currentText().toStdString();
     if (surface_name.empty())
     {
         appendLog("ERROR: Surface name is empty.");

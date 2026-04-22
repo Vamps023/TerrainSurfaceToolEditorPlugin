@@ -61,6 +61,14 @@ public:
                                      double flat_distance,
                                      double falloff_distance);
 
+    // Blends the falloff-region heights in `buffer` with the existing terrain height
+    // sampled via `fetch`. After this call, pixels inside the touched region hold the
+    // final blended world-space height and their alpha is set to 1.0 (fully opaque),
+    // so the GPU brush can simply overwrite height + opacity without further blending.
+    static void blendFalloffWithExistingTerrain(const Unigine::LandscapeLayerMapPtr& terrain_tile,
+                                                const Unigine::LandscapeFetchPtr& fetch,
+                                                RasterBuffer& buffer);
+
     static Unigine::ImagePtr createHeightImage(const RasterBuffer& buffer);
     static Unigine::ImagePtr createHeightAlphaImage(const Unigine::ImagePtr& height_image);
     static Unigine::ImagePtr createMaskImage(const RasterBuffer& buffer);

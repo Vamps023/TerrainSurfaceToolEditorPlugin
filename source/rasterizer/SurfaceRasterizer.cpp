@@ -2,8 +2,11 @@
 
 #include "../core/NodeTreeWalker.h"
 
+#include <UnigineLog.h>
+
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <queue>
 
 using namespace Unigine;
@@ -179,24 +182,33 @@ bool SurfaceRasterizer::rasterizeSurfaceHeight(const LandscapeLayerMapPtr& terra
     const ivec2 resolution = terrain_tile->getResolution();
     const Vec2 size = terrain_tile->getSize();
     const Vec2 step = size / Vec2(resolution);
+    const dvec2 step_d(static_cast<double>(step.x), static_cast<double>(step.y));
     bool modified = false;
 
     for (int vertex_index = 2; vertex_index < static_cast<int>(vertices_world_space.size()); vertex_index += 3)
     {
-        const Vec3 local_v1 = inverse_world * Vec3(vertices_world_space[vertex_index]);
-        const Vec3 local_v2 = inverse_world * Vec3(vertices_world_space[vertex_index - 1]);
-        const Vec3 local_v3 = inverse_world * Vec3(vertices_world_space[vertex_index - 2]);
+        // Transform in DOUBLE precision first (world coords can be huge in UNIGINE_DOUBLE mode).
+        // Casting dvec3 -> Vec3 BEFORE the inverse-world multiplication silently destroys
+        // precision and sends the rasterized footprint to the wrong location.
+        const dvec3 lv1_d = inverse_world * vertices_world_space[vertex_index];
+        const dvec3 lv2_d = inverse_world * vertices_world_space[vertex_index - 1];
+        const dvec3 lv3_d = inverse_world * vertices_world_space[vertex_index - 2];
+
+        // Down-cast to float only after we're in tile-local space (small magnitudes).
+        const Vec3 local_v1(static_cast<float>(lv1_d.x), static_cast<float>(lv1_d.y), static_cast<float>(lv1_d.z));
+        const Vec3 local_v2(static_cast<float>(lv2_d.x), static_cast<float>(lv2_d.y), static_cast<float>(lv2_d.z));
+        const Vec3 local_v3(static_cast<float>(lv3_d.x), static_cast<float>(lv3_d.y), static_cast<float>(lv3_d.z));
 
         const Vec3 tri_v1(local_v1.x, local_v1.y, 0.0f);
         const Vec3 tri_v2(local_v2.x, local_v2.y, 0.0f);
         const Vec3 tri_v3(local_v3.x, local_v3.y, 0.0f);
 
-        const int x1 = static_cast<int>(local_v1.x / step.x);
-        const int y1 = static_cast<int>(local_v1.y / step.y);
-        const int x2 = static_cast<int>(local_v2.x / step.x);
-        const int y2 = static_cast<int>(local_v2.y / step.y);
-        const int x3 = static_cast<int>(local_v3.x / step.x);
-        const int y3 = static_cast<int>(local_v3.y / step.y);
+        const int x1 = static_cast<int>(lv1_d.x / step_d.x);
+        const int y1 = static_cast<int>(lv1_d.y / step_d.y);
+        const int x2 = static_cast<int>(lv2_d.x / step_d.x);
+        const int y2 = static_cast<int>(lv2_d.y / step_d.y);
+        const int x3 = static_cast<int>(lv3_d.x / step_d.x);
+        const int y3 = static_cast<int>(lv3_d.y / step_d.y);
 
         const int min_x = std::max(0, std::min({x1, x2, x3}));
         const int min_y = std::max(0, std::min({y1, y2, y3}));
@@ -221,7 +233,9 @@ bool SurfaceRasterizer::rasterizeSurfaceHeight(const LandscapeLayerMapPtr& terra
                     ((local_v3 - local_v1) * static_cast<float>(bary_u)) +
                     ((local_v2 - local_v1) * static_cast<float>(bary_v));
 
-                out_buffer.values[pixel_index] = point.z;
+                // Convert tile-local height back to world space for terrain heightmap
+                const dvec3 world_point_d = terrain_tile->getWorldTransform() * dvec3(point.x, point.y, point.z);
+                out_buffer.values[pixel_index] = static_cast<float>(world_point_d.z);
                 out_buffer.alpha[pixel_index] = 1.0f;
                 out_buffer.source_index[pixel_index] = pixel_index;
                 out_buffer.seeds.push_back(pixel_index);
@@ -258,72 +272,178 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
     if (resolution.x <= 0 || resolution.y <= 0)
         return;
 
+    // Pixels-per-world-unit (use the larger axis so requested distances are at least respected).
     const Vec2 pixels_per_unit = Vec2(resolution) / Vec2(terrain_tile->getSize());
-    const int flat_steps = std::max(0, ivec2(pixels_per_unit * static_cast<float>(std::max(0.0, flat_distance))).max());
-    const int falloff_steps = std::max(0, ivec2(pixels_per_unit * static_cast<float>(std::max(0.0, falloff_distance))).max());
-    const int total_steps = flat_steps + falloff_steps;
+    const float ppu = std::max(pixels_per_unit.x, pixels_per_unit.y);
+    const float flat_pixels = static_cast<float>(std::max(0.0, flat_distance)) * ppu;
+    const float falloff_pixels = static_cast<float>(std::max(0.0, falloff_distance)) * ppu;
+    const float total_pixels = flat_pixels + falloff_pixels;
 
-    if (total_steps <= 0)
+    if (total_pixels <= 0.0f)
         return;
 
-    std::vector<int> frontier = buffer.seeds;
-    std::vector<int> next_frontier;
-    next_frontier.reserve(frontier.size() * 2);
+    // Chamfer 3-4 distance transform (two-pass) gives a near-Euclidean distance
+    // field with smooth circular iso-lines, avoiding the diamond/octagon artifacts
+    // of 4-connected BFS. We scale by 1/3 at the end so values are in pixel units.
+    constexpr int kAxisCost = 3;     // cardinal neighbour
+    constexpr int kDiagCost = 4;     // diagonal neighbour
+    constexpr int kInfDistance = std::numeric_limits<int>::max() / 4;
+
+    const int width = resolution.x;
+    const int height = resolution.y;
+    const int pixel_count = width * height;
+
+    std::vector<int> dist(pixel_count, kInfDistance);
+    std::vector<int> nearest_seed(pixel_count, -1);
+
+    // Seed cells (rasterised triangle interior) have distance 0 and reference themselves.
+    for (int seed_index : buffer.seeds)
+    {
+        if (seed_index >= 0 && seed_index < pixel_count)
+        {
+            dist[seed_index] = 0;
+            nearest_seed[seed_index] = seed_index;
+        }
+    }
+
+    auto relax = [&](int current_index, int neighbour_index, int cost)
+    {
+        const int candidate = dist[current_index] + cost;
+        if (candidate < dist[neighbour_index])
+        {
+            dist[neighbour_index] = candidate;
+            nearest_seed[neighbour_index] = nearest_seed[current_index];
+        }
+    };
+
+    // Forward pass: top-left to bottom-right, look at NW/N/NE/W neighbours.
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            const int idx = toIndex(x, y, width);
+            if (y > 0)
+            {
+                if (x > 0)          relax(toIndex(x - 1, y - 1, width), idx, kDiagCost);
+                                    relax(toIndex(x,     y - 1, width), idx, kAxisCost);
+                if (x < width - 1)  relax(toIndex(x + 1, y - 1, width), idx, kDiagCost);
+            }
+            if (x > 0)              relax(toIndex(x - 1, y,     width), idx, kAxisCost);
+        }
+    }
+
+    // Backward pass: bottom-right to top-left, look at SE/S/SW/E neighbours.
+    for (int y = height - 1; y >= 0; --y)
+    {
+        for (int x = width - 1; x >= 0; --x)
+        {
+            const int idx = toIndex(x, y, width);
+            if (y < height - 1)
+            {
+                if (x < width - 1)  relax(toIndex(x + 1, y + 1, width), idx, kDiagCost);
+                                    relax(toIndex(x,     y + 1, width), idx, kAxisCost);
+                if (x > 0)          relax(toIndex(x - 1, y + 1, width), idx, kDiagCost);
+            }
+            if (x < width - 1)      relax(toIndex(x + 1, y,     width), idx, kAxisCost);
+        }
+    }
 
     const auto smoothstep = [](float t) -> float
     {
-        const float clamped = clamp(t, 0.0f, 1.0f);
-        return (3.0f * clamped * clamped) - (2.0f * clamped * clamped * clamped);
+        const float c = clamp(t, 0.0f, 1.0f);
+        return (3.0f * c * c) - (2.0f * c * c * c);
     };
 
-    for (int step_index = 0; step_index < total_steps && !frontier.empty(); ++step_index)
+    // Convert chamfer distance to pixel-space Euclidean approximation (divide by axis cost)
+    // and write height + alpha for every pixel within flat + falloff radius.
+    for (int i = 0; i < pixel_count; ++i)
     {
-        next_frontier.clear();
-        for (int source_pixel_index : frontier)
+        if (dist[i] >= kInfDistance)
+            continue;
+
+        const float pixel_dist = static_cast<float>(dist[i]) / static_cast<float>(kAxisCost);
+        if (pixel_dist > total_pixels)
+            continue;
+
+        const int source = nearest_seed[i];
+        if (source < 0)
+            continue;
+
+        if (buffer.source_index[i] < 0)
         {
-            const int x = source_pixel_index % resolution.x;
-            const int y = source_pixel_index / resolution.x;
-            const int neighbors[4][2] = {{x + 1, y}, {x - 1, y}, {x, y + 1}, {x, y - 1}};
-
-            for (const auto& neighbor : neighbors)
-            {
-                const int nx = neighbor[0];
-                const int ny = neighbor[1];
-                if (nx < 0 || ny < 0 || nx >= resolution.x || ny >= resolution.y)
-                    continue;
-
-                const int neighbor_index = toIndex(nx, ny, resolution.x);
-                if (buffer.source_index[neighbor_index] >= 0)
-                    continue;
-
-                const int root_index = buffer.source_index[source_pixel_index] >= 0
-                    ? buffer.source_index[source_pixel_index]
-                    : source_pixel_index;
-
-                buffer.source_index[neighbor_index] = root_index;
-                buffer.values[neighbor_index] = buffer.values[root_index];
-
-                const int distance_step = step_index + 1;
-                if (distance_step <= flat_steps)
-                {
-                    buffer.alpha[neighbor_index] = 1.0f;
-                }
-                else if (falloff_steps > 0)
-                {
-                    const float t = static_cast<float>(total_steps - distance_step) /
-                                    static_cast<float>(falloff_steps);
-                    buffer.alpha[neighbor_index] = smoothstep(t);
-                }
-                else
-                {
-                    buffer.alpha[neighbor_index] = 1.0f;
-                }
-
-                next_frontier.push_back(neighbor_index);
-            }
+            buffer.source_index[i] = source;
+            buffer.values[i] = buffer.values[source];
         }
 
-        frontier.swap(next_frontier);
+        if (pixel_dist <= flat_pixels || falloff_pixels <= 0.0f)
+        {
+            buffer.alpha[i] = 1.0f;
+        }
+        else
+        {
+            const float t = (pixel_dist - flat_pixels) / falloff_pixels;
+            buffer.alpha[i] = smoothstep(1.0f - t);
+        }
+    }
+}
+
+void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapPtr& terrain_tile,
+                                                        const LandscapeFetchPtr& fetch,
+                                                        RasterBuffer& buffer)
+{
+    if (!terrain_tile || !fetch)
+        return;
+    if (buffer.resolution.x <= 0 || buffer.resolution.y <= 0)
+        return;
+
+    const dmat4 tile_world = terrain_tile->getWorldTransform();
+    const Vec2 tile_size = terrain_tile->getSize();
+    const ivec2 res = buffer.resolution;
+    const Vec2 step = tile_size / Vec2(res);
+
+    int falloff_pixels = 0;
+    int fetch_failures = 0;
+
+    for (int y = 0; y < res.y; ++y)
+    {
+        for (int x = 0; x < res.x; ++x)
+        {
+            const int i = toIndex(x, y, res.x);
+            const float a = buffer.alpha[i];
+            if (a <= 0.0f)
+                continue; // pixel was not touched by the rasterizer/flood-fill
+
+            if (a >= 1.0f)
+                continue; // flat zone; height is already the final mesh height
+
+            // Falloff ring: blend mesh height with the existing terrain height
+            // at this pixel's world-space XY. If the fetch succeeds we can
+            // promote the pixel to full opacity with a blended height. If it
+            // fails we leave the partial alpha so the brush still feathers
+            // via the opacity channel rather than producing a mesh-height cliff.
+            const Vec3 local_center((x + 0.5f) * step.x, (y + 0.5f) * step.y, 0.0f);
+            const dvec3 world = tile_world * dvec3(local_center.x, local_center.y, 0.0);
+            const Vec2 fetch_xy(static_cast<float>(world.x), static_cast<float>(world.y));
+
+            ++falloff_pixels;
+            if (fetch->fetchForce(fetch_xy))
+            {
+                const float existing_h = fetch->getHeight();
+                const float mesh_h = buffer.values[i];
+                buffer.values[i] = existing_h + (mesh_h - existing_h) * a;
+                buffer.alpha[i] = 1.0f;
+            }
+            else
+            {
+                ++fetch_failures;
+            }
+        }
+    }
+
+    if (falloff_pixels > 0)
+    {
+        Unigine::Log::message("TerrainSurfaceTool: falloff blend -> %d pixels, %d fetch failures\n",
+                              falloff_pixels, fetch_failures);
     }
 }
 
@@ -337,7 +457,6 @@ ImagePtr SurfaceRasterizer::createHeightImage(const RasterBuffer& buffer)
 
     for (int y = 0; y < buffer.resolution.y; ++y)
     {
-        const int image_y = toImageY(y, buffer.resolution.y);
         for (int x = 0; x < buffer.resolution.x; ++x)
         {
             const int index = toIndex(x, y, buffer.resolution.x);
@@ -346,7 +465,7 @@ ImagePtr SurfaceRasterizer::createHeightImage(const RasterBuffer& buffer)
             pixel.f.g = buffer.values[index];
             pixel.f.b = buffer.values[index];
             pixel.f.a = buffer.alpha[index];
-            image->set2D(x, image_y, pixel);
+            image->set2D(x, y, pixel);
         }
     }
 
@@ -386,15 +505,18 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer)
     ImagePtr image = Image::create();
     image->create2D(buffer.resolution.x, buffer.resolution.y, Image::FORMAT_R8);
 
+    // The landscape mask texture is sampled with Y inverted compared to the
+    // height texture, so we flip Y when writing pixels to keep the mask
+    // aligned with the mesh footprint in world space.
     for (int y = 0; y < buffer.resolution.y; ++y)
     {
-        const int image_y = toImageY(y, buffer.resolution.y);
+        const int dst_y = toImageY(y, buffer.resolution.y);
         for (int x = 0; x < buffer.resolution.x; ++x)
         {
             const int index = toIndex(x, y, buffer.resolution.x);
             Image::Pixel pixel;
             pixel.i.r = clamp(static_cast<int>(buffer.alpha[index] * 255.0f), 0, 255);
-            image->set2D(x, image_y, pixel);
+            image->set2D(x, dst_y, pixel);
         }
     }
 

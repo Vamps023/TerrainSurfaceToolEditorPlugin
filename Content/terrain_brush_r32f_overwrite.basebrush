@@ -30,6 +30,8 @@ BaseBrushMaterial brush <var_prefix=var texture_prefix=tex>
 				
 				int2 scr_coord = toInt2(IN_POSITION.xy);
 				
+				// CPU has already blended new_height with the existing terrain
+				// using the falloff alpha, so we can just write it straight out.
 				float height = TEXTURE_FETCH(tex_new_height, scr_coord).x;
 				float opacity = TEXTURE_FETCH(tex_new_alpha, scr_coord).x;
 				OUT_MRT(0) = height;
