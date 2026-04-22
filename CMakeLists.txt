@@ -17,52 +17,54 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC OFF)
 set(CMAKE_AUTOUIC OFF)
 
-# Set Qt5 path - Use Qt 5.12.3 to match Unigine 2.18
-set(CMAKE_PREFIX_PATH "C:/Qt/Qt5.12.3/5.12.3/msvc2017_64")
-set(Qt5_DIR "C:/Qt/Qt5.12.3/5.12.3/msvc2017_64/lib/cmake/Qt5")
+# Load machine-local paths (gitignored, copy from local_paths.cmake.example)
+include(${CMAKE_CURRENT_SOURCE_DIR}/local_paths.cmake)
+
+set(CMAKE_PREFIX_PATH "${QT5_DIR}")
+set(Qt5_DIR "${QT5_DIR}/lib/cmake/Qt5")
 
 find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
 
-# Unigine SDK paths - EXACT MATCH TO GANTRYLABELTOOL
-set(UNIGINE_SDK_DIR "C:/Users/snare.ext/AppData/Local/unigine/browser/sdks/sim_windows_2.18.0.1_bin")
 set(UNIGINE_INCLUDE_DIR "${UNIGINE_SDK_DIR}/include")
 set(UNIGINE_LIB_DIR "${UNIGINE_SDK_DIR}/lib")
 
-# Deploy path - EXACT MATCH TO GANTRYLABELTOOL
-set(DEPLOY_DIR "C:/Users/snare.ext/Documents/UNIGINE Projects/unigine_project_3/bin/plugins/${vendor_name}/${target_name}")
+set(DEPLOY_DIR "${DEPLOY_BASE_DIR}/bin/plugins/${vendor_name}/${target_name}")
 
 set(binary_name ${target_name}_editorplugin)
 string(APPEND binary_name "_double")
 string(APPEND binary_name "_x64")
 
-# Include directories - EXACT MATCH TO GANTRYLABELTOOL
 include_directories(
     ${UNIGINE_INCLUDE_DIR}
     ${UNIGINE_INCLUDE_DIR}/editor
     ${CMAKE_CURRENT_SOURCE_DIR}/source
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/landscape
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/rasterizer
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/terrain
+    ${CMAKE_CURRENT_SOURCE_DIR}/source/ui
 )
 
-# Source files
 set(SOURCES
-    source/LandscapeSaveManager.cpp
-    source/SurfaceRasterizer.cpp
-    source/TerrainManipulator.cpp
-    source/TerrainToolPanel.cpp
-    source/TerrainSurfaceToolEditorPlugin.cpp
+    source/core/TerrainSurfaceToolEditorPlugin.cpp
+    source/landscape/LandscapeSaveManager.cpp
+    source/rasterizer/SurfaceRasterizer.cpp
+    source/terrain/TerrainManipulator.cpp
+    source/ui/TerrainToolPanel.cpp
 )
 
 set(HEADERS
-    source/LandscapeSaveManager.h
-    source/SurfaceRasterizer.h
-    source/TerrainManipulator.h
-    source/TerrainToolPanel.h
-    source/TerrainSurfaceToolEditorPlugin.h
+    source/core/TerrainSurfaceToolEditorPlugin.h
+    source/core/NodeTreeWalker.h
+    source/landscape/LandscapeSaveManager.h
+    source/rasterizer/SurfaceRasterizer.h
+    source/terrain/TerrainBrushSettings.h
+    source/terrain/TerrainManipulator.h
+    source/ui/TerrainToolPanel.h
 )
 
-# Create shared library (DLL) - EXACT MATCH TO GANTRYLABELTOOL
 add_library(${target_name} SHARED ${SOURCES} ${HEADERS})
 
-# Link libraries - EXACT MATCH TO GANTRYLABELTOOL
 target_link_libraries(${target_name}
     Qt5::Core
     Qt5::Gui
@@ -71,7 +73,6 @@ target_link_libraries(${target_name}
     "${UNIGINE_LIB_DIR}/Unigine_double_x64.lib"
 )
 
-# Output directory and plugin filename format - EXACT MATCH TO GANTRYLABELTOOL
 set_target_properties(${target_name} PROPERTIES
     OUTPUT_NAME ${binary_name}$<$<CONFIG:Debug>:d>
     RUNTIME_OUTPUT_DIRECTORY_RELEASE "${DEPLOY_DIR}"

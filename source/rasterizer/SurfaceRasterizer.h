@@ -78,8 +78,4 @@ private:
                                 double& out_v);
     static bool appendSurfaceTrianglesWorldSpace(const ObjectSurface& object_surface,
                                                  Unigine::Vector<Unigine::Math::dvec3>& out_vertices);
-    static void collectMeshNodesRecursive(const Unigine::NodePtr& node,
-                                          std::vector<Unigine::NodePtr>& out_nodes,
-                                          std::unordered_set<int>& visited_node_ids,
-                                          std::unordered_set<int>& collected_mesh_ids);
 };

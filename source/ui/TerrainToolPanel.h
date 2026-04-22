@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TerrainManipulator.h"
+#include "../terrain/TerrainBrushSettings.h"
 
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -13,6 +13,8 @@
 #include <QTextEdit>
 #include <QVBoxLayout>
 #include <QWidget>
+
+#include <UnigineObjects.h>
 
 namespace UnigineEditor
 {

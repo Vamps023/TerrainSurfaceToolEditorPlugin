@@ -6,10 +6,21 @@ setlocal
 REM Set paths
 set PROJECT_ROOT=%~dp0
 set BUILD_DIR=%PROJECT_ROOT%build
-set DEPLOY_DIR=C:\Users\snare.ext\Documents\UNIGINE Projects\unigine_project_3\bin\plugins\Vamps\TerrainSurfaceTool
-set PROJECT_DATA_DIR=C:\Users\snare.ext\Documents\UNIGINE Projects\unigine_project_3\data
+set LOCAL_PATHS=%PROJECT_ROOT%local_paths.cmake
 set TARGET_NAME=TerrainSurfaceTool
 set BINARY_NAME=%TARGET_NAME%_editorplugin_double_x64
+
+REM Generate local_paths.cmake if missing
+if not exist "%LOCAL_PATHS%" (
+    echo Generating local_paths.cmake from defaults...
+    echo set^(QT5_DIR        "C:/Qt/Qt5.12.3/5.12.3/msvc2017_64"^)    > "%LOCAL_PATHS%"
+    echo set^(UNIGINE_SDK_DIR "C:/Users/nares/AppData/Local/unigine/browser/sdks/sim_windows_2.18.1_bin"^) >> "%LOCAL_PATHS%"
+    echo set^(DEPLOY_BASE_DIR "D:/Unigine/unigine_project"^)           >> "%LOCAL_PATHS%"
+    echo local_paths.cmake created. Edit it if your paths differ.
+)
+
+set DEPLOY_DIR=D:\Unigine\unigine_project\bin\plugins\Vamps\TerrainSurfaceTool
+set PROJECT_DATA_DIR=D:\Unigine\unigine_project\data
 
 echo Project Root: %PROJECT_ROOT%
 echo Build Dir: %BUILD_DIR%
@@ -20,20 +31,20 @@ echo Binary Name: %BINARY_NAME%
 echo.
 
 REM Create build directory
-if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
-if not exist "%DEPLOY_DIR%" mkdir "%DEPLOY_DIR%"
-if not exist "%PROJECT_DATA_DIR%" mkdir "%PROJECT_DATA_DIR%"
+if not exist "%BUILD_DIR%" md "%BUILD_DIR%"
+if not exist "%DEPLOY_DIR%" md "%DEPLOY_DIR%" 2>nul || powershell -Command "New-Item -ItemType Directory -Force '%DEPLOY_DIR%'" >nul
+if not exist "%PROJECT_DATA_DIR%" md "%PROJECT_DATA_DIR%" 2>nul || powershell -Command "New-Item -ItemType Directory -Force '%PROJECT_DATA_DIR%'" >nul
 
 REM Copy plugin metadata
 echo Copying plugin metadata...
-copy "%PROJECT_ROOT%source\TerrainSurfaceToolEditorPlugin.json" "%DEPLOY_DIR%\" >nul 2>&1
+copy "%PROJECT_ROOT%source\core\TerrainSurfaceToolEditorPlugin.json" "%DEPLOY_DIR%\" >nul 2>&1
 echo Copying plugin content assets...
 copy "%PROJECT_ROOT%Content\*.basebrush" "%PROJECT_DATA_DIR%\" >nul 2>&1
 copy "%PROJECT_ROOT%Content\*.basemat" "%PROJECT_DATA_DIR%\" >nul 2>&1
 
 REM Setup VS2022 Developer Command Prompt
 echo Setting up VS2022 Developer Command Prompt...
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul 2>&1
+call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 >nul 2>&1
 
 echo VS2022 Developer Command Prompt initialized!
 
@@ -47,7 +58,7 @@ if exist "CMakeFiles" rmdir /s /q "CMakeFiles"
 
 REM Use Ninja generator
 echo Using Ninja generator...
-cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER="C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe" -DCMAKE_CXX_COMPILER="C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe"
 if %ERRORLEVEL% NEQ 0 (
     echo CMake configuration failed!
     exit /b 1

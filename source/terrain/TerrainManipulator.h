@@ -1,7 +1,8 @@
 #pragma once
 
-#include "LandscapeSaveManager.h"
-#include "SurfaceRasterizer.h"
+#include "TerrainBrushSettings.h"
+#include "../landscape/LandscapeSaveManager.h"
+#include "../rasterizer/SurfaceRasterizer.h"
 
 #include <UnigineEvent.h>
 #include <UnigineImage.h>
@@ -13,14 +14,6 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-struct TerrainBrushSettings
-{
-    double brush_size = 10.0;
-    double flat_distance = 30.0;
-    double falloff_distance = 30.0;
-    double smoothing_strength = 0.5;
-};
 
 class TerrainManipulator
 {

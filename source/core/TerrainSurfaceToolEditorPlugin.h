@@ -45,12 +45,6 @@ private slots:
 
 private:
     void setupMenu();
-    static void collectLandscapeTerrainsRecursive(const Unigine::NodePtr& node,
-                                                  std::vector<Unigine::ObjectLandscapeTerrainPtr>& out_terrains,
-                                                  std::unordered_set<int>& visited_node_ids);
-    static void collectLandscapeLayerMapsRecursive(const Unigine::NodePtr& node,
-                                                   std::vector<Unigine::LandscapeLayerMapPtr>& out_layer_maps,
-                                                   std::unordered_set<int>& visited_node_ids);
 
     std::unique_ptr<LandscapeSaveManager> save_manager_;
     std::unique_ptr<TerrainManipulator> terrain_manipulator_;

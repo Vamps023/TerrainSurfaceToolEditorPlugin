@@ -1,5 +1,7 @@
 #include "SurfaceRasterizer.h"
 
+#include "../core/NodeTreeWalker.h"
+
 #include <algorithm>
 #include <cmath>
 #include <queue>
@@ -76,7 +78,7 @@ std::vector<NodePtr> SurfaceRasterizer::collectMeshNodesRecursive(const std::vec
     std::unordered_set<int> collected_mesh_ids;
 
     for (const auto& root : roots)
-        collectMeshNodesRecursive(root, collected_nodes, visited_node_ids, collected_mesh_ids);
+        NodeTreeWalker::collectMeshNodesRecursive(root, collected_nodes, visited_node_ids, collected_mesh_ids);
 
     return collected_nodes;
 }
@@ -472,36 +474,4 @@ bool SurfaceRasterizer::appendSurfaceTrianglesWorldSpace(const ObjectSurface& ob
     }
 
     return !out_vertices.empty();
-}
-
-void SurfaceRasterizer::collectMeshNodesRecursive(const NodePtr& node,
-                                                  std::vector<NodePtr>& out_nodes,
-                                                  std::unordered_set<int>& visited_node_ids,
-                                                  std::unordered_set<int>& collected_mesh_ids)
-{
-    if (!node)
-        return;
-
-    const int node_id = node->getID();
-    if (!visited_node_ids.insert(node_id).second)
-        return;
-
-    if (node->getType() == Node::OBJECT_MESH_STATIC || node->getType() == Node::OBJECT_MESH_DYNAMIC)
-    {
-        if (collected_mesh_ids.insert(node_id).second)
-            out_nodes.push_back(node);
-    }
-    else if (node->getType() == Node::NODE_REFERENCE)
-    {
-        auto reference = checked_ptr_cast<NodeReference>(node);
-        if (reference)
-        {
-            auto target = reference->getReference();
-            if (target)
-                collectMeshNodesRecursive(target, out_nodes, visited_node_ids, collected_mesh_ids);
-        }
-    }
-
-    for (int child_index = 0; child_index < node->getNumChildren(); ++child_index)
-        collectMeshNodesRecursive(node->getChild(child_index), out_nodes, visited_node_ids, collected_mesh_ids);
 }

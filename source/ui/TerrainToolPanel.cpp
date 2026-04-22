@@ -1,6 +1,7 @@
 #include "TerrainToolPanel.h"
 
-#include "TerrainSurfaceToolEditorPlugin.h"
+#include "../core/TerrainSurfaceToolEditorPlugin.h"
+#include "../terrain/TerrainManipulator.h"
 
 #include <QtGui/QPalette>
 #include <QHBoxLayout>

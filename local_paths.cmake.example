@@ -1,0 +1,6 @@
+# Copy this file to local_paths.cmake and fill in your own paths.
+# local_paths.cmake is gitignored - never commit it.
+
+set(QT5_DIR        "C:/Qt/Qt5.12.3/5.12.3/msvc2017_64")
+set(UNIGINE_SDK_DIR "C:/Users/<your_username>/AppData/Local/unigine/browser/sdks/sim_windows_2.18.1_bin")
+set(DEPLOY_BASE_DIR "D:/Unigine/unigine_project")
