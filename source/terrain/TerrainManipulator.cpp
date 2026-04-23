@@ -143,7 +143,49 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
                                                                    raster_buffer,
                                                                    settings.clamp_to_original);
 
+                // Fill unpainted pixels (alpha=0) with existing terrain height so the
+                // brush writes the correct value there and doesn't produce a black ring.
+                SurfaceRasterizer::fillUnpaintedPixelsWithTerrain(tile,
+                                                                   terrain_context.fetch,
+                                                                   raster_buffer);
+
                 const ImagePtr height_image = SurfaceRasterizer::createHeightImage(raster_buffer);
+
+                // DEBUG: save height and alpha images for inspection
+                if (height_image)
+                {
+                    const std::string tile_name = std::string(tile->getName());
+                    const std::string h_path = "C:/Temp/debug_height_" + tile_name + ".png";
+                    const std::string a_path = "C:/Temp/debug_alpha_" + tile_name + ".png";
+
+                    // Normalize height image for visual inspection (save as 8-bit PNG)
+                    const ivec2 res = raster_buffer.resolution;
+                    float h_min = 1e30f, h_max = -1e30f;
+                    for (float v : raster_buffer.values) { if (v != 0.0f) { h_min = std::min(h_min, v); h_max = std::max(h_max, v); } }
+                    if (h_max <= h_min) h_max = h_min + 1.0f;
+
+                    ImagePtr vis_h = Image::create();
+                    vis_h->create2D(res.x, res.y, Image::FORMAT_R8);
+                    ImagePtr vis_a = Image::create();
+                    vis_a->create2D(res.x, res.y, Image::FORMAT_R8);
+                    for (int y = 0; y < res.y; ++y)
+                    {
+                        for (int x = 0; x < res.x; ++x)
+                        {
+                            const int i = x + y * res.x;
+                            const int h_val = static_cast<int>(clamp((raster_buffer.values[i] - h_min) / (h_max - h_min), 0.0f, 1.0f) * 255.0f);
+                            const int a_val = static_cast<int>(clamp(raster_buffer.alpha[i], 0.0f, 1.0f) * 255.0f);
+                            Image::Pixel ph(h_val, h_val, h_val, 255);
+                            Image::Pixel pa(a_val, a_val, a_val, 255);
+                            vis_h->set2D(x, y, ph);
+                            vis_a->set2D(x, y, pa);
+                        }
+                    }
+                    vis_h->save(h_path.c_str());
+                    vis_a->save(a_path.c_str());
+                    if (log) log("  DEBUG: saved " + h_path + " and " + a_path);
+                }
+
                 if (height_image && setTerrainHeight(tile, height_image))
                     queued_any_operation = true;
             }

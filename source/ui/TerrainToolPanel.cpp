@@ -435,6 +435,7 @@ void TerrainToolPanel::onApplyToMask()
                      : "=== Apply to Landscape Mask Complete (No Changes) ===");
 }
 
+
 void TerrainToolPanel::onPaintCompleteWhite()
 {
     appendLog("=== Paint Complete White Height ===");
