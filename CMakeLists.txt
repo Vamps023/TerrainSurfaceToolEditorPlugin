@@ -17,8 +17,21 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC OFF)
 set(CMAKE_AUTOUIC OFF)
 
-# Load machine-local paths (gitignored, copy from local_paths.cmake.example)
-include(${CMAKE_CURRENT_SOURCE_DIR}/local_paths.cmake)
+# Load machine-local paths if present, otherwise use -D passed values
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/local_paths.cmake)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/local_paths.cmake)
+else()
+    # Use values passed via -D command line or set defaults
+    if(NOT DEFINED UNIGINE_SDK_DIR)
+        message(FATAL_ERROR "UNIGINE_SDK_DIR not defined. Pass -DUNIGINE_SDK_DIR=<path> or create local_paths.cmake")
+    endif()
+    if(NOT DEFINED QT5_DIR)
+        message(FATAL_ERROR "QT5_DIR not defined. Pass -DQT5_DIR=<path> or create local_paths.cmake")
+    endif()
+    if(NOT DEFINED DEPLOY_BASE_DIR)
+        set(DEPLOY_BASE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/deploy)
+    endif()
+endif()
 
 set(CMAKE_PREFIX_PATH "${QT5_DIR}")
 set(Qt5_DIR "${QT5_DIR}/lib/cmake/Qt5")
@@ -28,7 +41,10 @@ find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
 set(UNIGINE_INCLUDE_DIR "${UNIGINE_SDK_DIR}/include")
 set(UNIGINE_LIB_DIR "${UNIGINE_SDK_DIR}/lib")
 
-set(DEPLOY_DIR "${DEPLOY_BASE_DIR}/bin/plugins/${vendor_name}/${target_name}")
+# Allow DEPLOY_DIR to be passed directly, or construct from DEPLOY_BASE_DIR
+if(NOT DEFINED DEPLOY_DIR)
+    set(DEPLOY_DIR "${DEPLOY_BASE_DIR}/bin/plugins/${vendor_name}/${target_name}")
+endif()
 
 set(binary_name ${target_name}_editorplugin)
 string(APPEND binary_name "_double")

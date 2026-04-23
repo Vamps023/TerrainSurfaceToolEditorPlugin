@@ -7,7 +7,7 @@
 #include <UnigineEvent.h>
 #include <UnigineImage.h>
 #include <UnigineMaterials.h>
-#include <UnigineMeshStatic.h>
+#include <UnigineMesh.h>
 #include <UnigineObjects.h>
 
 #include <functional>
@@ -42,6 +42,12 @@ public:
                              const Unigine::ObjectLandscapeTerrainPtr& terrain,
                              const Unigine::LandscapeLayerMapPtr& target_tile,
                              const LogFn& log);
+
+    bool paintWhiteHeight(const std::vector<Unigine::NodePtr>& nodes,
+                          const Unigine::ObjectLandscapeTerrainPtr& terrain,
+                          const Unigine::LandscapeLayerMapPtr& target_tile,
+                          const TerrainBrushSettings& settings,
+                          const LogFn& log);
 
     bool isBusy() const;
     size_t pendingOperationCount() const;
@@ -132,7 +138,7 @@ private:
     LandscapeSaveManager& save_manager_;
     std::unordered_map<int, BrushOperationData> pending_operations_;
 
-    Unigine::EventConnectionId texture_draw_connection_id_ = nullptr;
+    Unigine::EventConnection texture_draw_connection_;
     int pending_transaction_commits_ = 0;
     bool in_progress_ = false;
 };

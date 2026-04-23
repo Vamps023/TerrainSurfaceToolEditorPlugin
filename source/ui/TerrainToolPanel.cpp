@@ -121,6 +121,7 @@ void TerrainToolPanel::setupUi()
     spin_falloff_distance_ = addSpinRow("Falloff Distance:", 0.0, 2000.0, 20.0, 1.0,
                                         "Smooth blend distance (in world units) where terrain\n"
                                         "transitions from the mesh height back to original.");
+
     main_layout->addWidget(brush_group);
 
     auto* actions_group = new QGroupBox("Actions", this);
@@ -138,11 +139,11 @@ void TerrainToolPanel::setupUi()
     connect(button_mask_, &QPushButton::clicked, this, &TerrainToolPanel::onApplyToMask);
     actions_layout->addWidget(button_mask_);
 
-    button_reset_ = new QPushButton("Reset / Clear Heights", this);
-    button_reset_->setStyleSheet(
-        "QPushButton { background-color: #8f2a2a; color: white; padding: 8px; }");
-    connect(button_reset_, &QPushButton::clicked, this, &TerrainToolPanel::onResetTerrainHeight);
-    actions_layout->addWidget(button_reset_);
+    button_paint_white_ = new QPushButton("Paint Complete White Height", this);
+    button_paint_white_->setStyleSheet(
+        "QPushButton { background-color: #2a7f8f; color: white; padding: 8px; }");
+    connect(button_paint_white_, &QPushButton::clicked, this, &TerrainToolPanel::onPaintCompleteWhite);
+    actions_layout->addWidget(button_paint_white_);
 
     main_layout->addWidget(actions_group);
 
@@ -262,6 +263,7 @@ TerrainBrushSettings TerrainToolPanel::currentSettings() const
     settings.flat_distance = spin_flat_distance_ ? spin_flat_distance_->value() : 30.0;
     settings.falloff_distance = spin_falloff_distance_ ? spin_falloff_distance_->value() : 30.0;
     settings.smoothing_strength = 0.5;
+    settings.clamp_to_original = false;
     return settings;
 }
 
@@ -433,10 +435,9 @@ void TerrainToolPanel::onApplyToMask()
                      : "=== Apply to Landscape Mask Complete (No Changes) ===");
 }
 
-void TerrainToolPanel::onResetTerrainHeight()
+void TerrainToolPanel::onPaintCompleteWhite()
 {
-    refreshLandscapeTileOptions(true);
-    appendLog("=== Reset Terrain Heights ===");
+    appendLog("=== Paint Complete White Height ===");
     progress_bar_->setValue(0);
 
     if (!plugin_ || !plugin_->manipulator())
@@ -461,15 +462,21 @@ void TerrainToolPanel::onResetTerrainHeight()
         appendLog("ERROR: No landscape selected.");
         return;
     }
-    const bool queued = plugin_->manipulator()->resetTerrainHeights(
+
+    appendLog(QString("Found %1 mesh node(s)").arg(selected_nodes.size()));
+    progress_bar_->setValue(50);
+
+    const TerrainBrushSettings settings = currentSettings();
+    const bool queued = plugin_->manipulator()->paintWhiteHeight(
         selected_nodes,
         target_terrain,
         target_tile,
+        settings,
         [this](const std::string& message)
         {
             appendLog(QString::fromStdString(message));
         });
 
     progress_bar_->setValue(100);
-    appendLog(queued ? "=== Reset Complete ===" : "=== Reset Complete (No Changes) ===");
+    appendLog(queued ? "=== Paint White Complete ===" : "=== Paint White Complete (No Changes) ===");
 }

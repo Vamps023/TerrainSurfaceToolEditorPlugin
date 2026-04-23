@@ -2,7 +2,7 @@
 
 #include <UnigineImage.h>
 #include <UnigineMathLib.h>
-#include <UnigineMeshStatic.h>
+#include <UnigineMesh.h>
 #include <UnigineNode.h>
 #include <UnigineNodes.h>
 #include <UnigineObjects.h>
@@ -65,9 +65,17 @@ public:
     // sampled via `fetch`. After this call, pixels inside the touched region hold the
     // final blended world-space height and their alpha is set to 1.0 (fully opaque),
     // so the GPU brush can simply overwrite height + opacity without further blending.
+    // If clamp_to_original is true, blended height will never go below original terrain height.
     static void blendFalloffWithExistingTerrain(const Unigine::LandscapeLayerMapPtr& terrain_tile,
                                                 const Unigine::LandscapeFetchPtr& fetch,
-                                                RasterBuffer& buffer);
+                                                RasterBuffer& buffer,
+                                                bool clamp_to_original = false);
+
+    // Fills alpha=0 pixels with the existing terrain height so the brush never
+    // writes height=0 outside the painted region (prevents black ring/pit artifacts).
+    static void fillUnpaintedPixelsWithTerrain(const Unigine::LandscapeLayerMapPtr& terrain_tile,
+                                               const Unigine::LandscapeFetchPtr& fetch,
+                                               RasterBuffer& buffer);
 
     static Unigine::ImagePtr createHeightImage(const RasterBuffer& buffer);
     static Unigine::ImagePtr createHeightAlphaImage(const Unigine::ImagePtr& height_image);

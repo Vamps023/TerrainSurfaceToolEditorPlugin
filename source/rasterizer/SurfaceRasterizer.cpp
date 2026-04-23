@@ -94,12 +94,12 @@ bool SurfaceRasterizer::extractSurfaceVerticesWorldSpace(const ObjectMeshStaticP
     if (!mesh || surface_id < 0)
         return false;
 
-    auto mesh_static = mesh->getMeshForce();
+    auto mesh_static = mesh->getMeshForceRAM();
     if (!mesh_static)
         return false;
 
     const dmat4 world_transform = mesh->getWorldTransform();
-    const int vertex_count = mesh_static->getNumVertices(surface_id);
+    const int vertex_count = mesh_static->getNumVertex(surface_id);
     out_vertices.reserve(vertex_count);
 
     for (int vertex_index = 0; vertex_index < vertex_count; ++vertex_index)
@@ -389,7 +389,8 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
 
 void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapPtr& terrain_tile,
                                                         const LandscapeFetchPtr& fetch,
-                                                        RasterBuffer& buffer)
+                                                        RasterBuffer& buffer,
+                                                        bool clamp_to_original)
 {
     if (!terrain_tile || !fetch)
         return;
@@ -403,6 +404,7 @@ void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapP
 
     int falloff_pixels = 0;
     int fetch_failures = 0;
+    int clamped_pixels = 0;
 
     for (int y = 0; y < res.y; ++y)
     {
@@ -414,7 +416,30 @@ void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapP
                 continue; // pixel was not touched by the rasterizer/flood-fill
 
             if (a >= 1.0f)
-                continue; // flat zone; height is already the final mesh height
+            {
+                // Flat zone: height is the pure mesh height.
+                // If clamp is on and mesh would dig below terrain, keep original.
+                if (clamp_to_original)
+                {
+                    const Vec3 lc((x + 0.5f) * step.x, (y + 0.5f) * step.y, 0.0f);
+                    const dvec3 w = tile_world * dvec3(lc.x, lc.y, 0.0);
+                    const Vec2 fxy(static_cast<float>(w.x), static_cast<float>(w.y));
+                    if (fetch->fetchForce(fxy))
+                    {
+                        const float existing_h = fetch->getHeight();
+                        if (buffer.values[i] < existing_h)
+                        {
+                            buffer.values[i] = existing_h;
+                            ++clamped_pixels;
+                        }
+                    }
+                    else
+                    {
+                        buffer.alpha[i] = 0.0f; // no terrain data, skip pixel
+                    }
+                }
+                continue;
+            }
 
             // Falloff ring: blend mesh height with the existing terrain height
             // at this pixel's world-space XY. If the fetch succeeds we can
@@ -430,11 +455,23 @@ void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapP
             {
                 const float existing_h = fetch->getHeight();
                 const float mesh_h = buffer.values[i];
-                buffer.values[i] = existing_h + (mesh_h - existing_h) * a;
+                float blended_h = existing_h + (mesh_h - existing_h) * a;
+
+                // Clamp to prevent going below original terrain height (prevents edge dips)
+                if (clamp_to_original && blended_h < existing_h)
+                {
+                    blended_h = existing_h;
+                    ++clamped_pixels;
+                }
+
+                buffer.values[i] = blended_h;
                 buffer.alpha[i] = 1.0f;
             }
             else
             {
+                // Fetch failed — no terrain data here (tile edge / outside terrain).
+                // Zero out alpha so the brush does NOT paint this pixel at all.
+                buffer.alpha[i] = 0.0f;
                 ++fetch_failures;
             }
         }
@@ -442,8 +479,43 @@ void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapP
 
     if (falloff_pixels > 0)
     {
-        Unigine::Log::message("TerrainSurfaceTool: falloff blend -> %d pixels, %d fetch failures\n",
-                              falloff_pixels, fetch_failures);
+        Unigine::Log::message("TerrainSurfaceTool: falloff blend -> %d pixels, %d fetch failures%s\n",
+                              falloff_pixels, fetch_failures,
+                              clamped_pixels > 0 ? std::string(", " + std::to_string(clamped_pixels) + " clamped").c_str() : "");
+    }
+}
+
+void SurfaceRasterizer::fillUnpaintedPixelsWithTerrain(const LandscapeLayerMapPtr& terrain_tile,
+                                                       const LandscapeFetchPtr& fetch,
+                                                       RasterBuffer& buffer)
+{
+    if (!terrain_tile || !fetch)
+        return;
+    if (buffer.resolution.x <= 0 || buffer.resolution.y <= 0)
+        return;
+
+    const dmat4 tile_world = terrain_tile->getWorldTransform();
+    const Vec2 tile_size = terrain_tile->getSize();
+    const ivec2 res = buffer.resolution;
+    const Vec2 step = tile_size / Vec2(res);
+
+    for (int y = 0; y < res.y; ++y)
+    {
+        for (int x = 0; x < res.x; ++x)
+        {
+            const int i = toIndex(x, y, res.x);
+            if (buffer.alpha[i] > 0.0f)
+                continue; // already painted — leave it alone
+
+            const Vec3 lc((x + 0.5f) * step.x, (y + 0.5f) * step.y, 0.0f);
+            const dvec3 w = tile_world * dvec3(lc.x, lc.y, 0.0);
+            const Vec2 fxy(static_cast<float>(w.x), static_cast<float>(w.y));
+
+            if (fetch->fetchForce(fxy))
+                buffer.values[i] = fetch->getHeight();
+            // alpha stays 0 — brush will write this height but with opacity=0
+            // so Unigine won't actually change the stored terrain height
+        }
     }
 }
 
@@ -579,12 +651,12 @@ bool SurfaceRasterizer::appendSurfaceTrianglesWorldSpace(const ObjectSurface& ob
     if (!mesh_static_object)
         return false;
 
-    auto mesh = mesh_static_object->getMeshForce();
+    auto mesh = mesh_static_object->getMeshForceRAM();
     if (!mesh)
         return false;
 
     const Vector<int>& indices = mesh->getCIndices(surface_index);
-    const int surface_vertex_count = mesh->getNumVertices(surface_index);
+    const int surface_vertex_count = mesh->getNumVertex(surface_index);
 
     out_vertices.reserve(indices.size());
     for (int index : indices)

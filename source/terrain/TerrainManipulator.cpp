@@ -39,7 +39,7 @@ double effectiveFlatDistance(const TerrainBrushSettings& settings)
 TerrainManipulator::TerrainManipulator(LandscapeSaveManager& save_manager)
     : save_manager_(save_manager)
 {
-    texture_draw_connection_id_ = Landscape::getEventTextureDraw().connect(
+    Landscape::getEventTextureDraw().connect(texture_draw_connection_,
         [this](const UGUID& guid, int operation_id, const LandscapeTexturesPtr& buffer,
                const ivec2& coord, int data_mask)
         {
@@ -49,11 +49,7 @@ TerrainManipulator::TerrainManipulator(LandscapeSaveManager& save_manager)
 
 TerrainManipulator::~TerrainManipulator()
 {
-    if (texture_draw_connection_id_)
-    {
-        Landscape::getEventTextureDraw().disconnect(texture_draw_connection_id_);
-        texture_draw_connection_id_ = nullptr;
-    }
+    texture_draw_connection_.disconnect();
 
     pending_operations_.clear();
     pending_transaction_commits_ = 0;
@@ -144,7 +140,8 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
                 // material cannot sample the terrain_height texture itself).
                 SurfaceRasterizer::blendFalloffWithExistingTerrain(tile,
                                                                    terrain_context.fetch,
-                                                                   raster_buffer);
+                                                                   raster_buffer,
+                                                                   settings.clamp_to_original);
 
                 const ImagePtr height_image = SurfaceRasterizer::createHeightImage(raster_buffer);
                 if (height_image && setTerrainHeight(tile, height_image))
@@ -278,6 +275,74 @@ bool TerrainManipulator::resetTerrainHeights(const std::vector<NodePtr>& nodes,
             pixel.f.g = 0.0f;
             pixel.f.b = 0.0f;
             pixel.f.a = 1.0f;
+
+            for (int x = 0; x < tile_resolution.x; ++x)
+            {
+                for (int y = 0; y < tile_resolution.y; ++y)
+                    height_image->set2D(x, y, pixel);
+            }
+
+            if (setTerrainHeight(tile, height_image))
+                queued_any_operation = true;
+        }
+    }
+
+    finishActionScheduling();
+    if (!queued_any_operation && log)
+        log("WARNING: No terrain tiles intersected the selected meshes.");
+    return queued_any_operation;
+}
+
+bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
+                                          const ObjectLandscapeTerrainPtr& terrain,
+                                          const LandscapeLayerMapPtr& target_tile,
+                                          const TerrainBrushSettings& settings,
+                                          const LogFn& log)
+{
+    if (nodes.empty())
+        return false;
+
+    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
+    if (!terrain_context.terrain)
+    {
+        if (log)
+            log("ERROR: No active landscape terrain.");
+        return false;
+    }
+
+    beginActionTransaction();
+    bool queued_any_operation = false;
+
+    for (const auto& node : nodes)
+    {
+        if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
+            continue;
+
+        ObjectMeshStaticPtr mesh = checked_ptr_cast<ObjectMeshStatic>(node);
+        if (!mesh)
+            continue;
+
+        // Use the mesh's top Z in world space as the uniform erase height
+        const WorldBoundBox mesh_bounds = mesh->getWorldBoundBox();
+        const float paint_height = static_cast<float>(mesh_bounds.maximum.z);
+
+        if (log)
+            log("  Erasing entire tile to height = " + std::to_string(paint_height) + " m (mesh top).");
+
+        for (const auto& tile : terrain_context.layer_maps)
+        {
+            if (!tile || !tile->getWorldBoundBox().insideValid(mesh_bounds))
+                continue;
+
+            const ivec2 tile_resolution = tile->getResolution();
+            ImagePtr height_image = Image::create();
+            height_image->create2D(tile_resolution.x, tile_resolution.y, Image::FORMAT_RGBA32F);
+
+            Image::Pixel pixel;
+            pixel.f.r = paint_height;
+            pixel.f.g = paint_height;
+            pixel.f.b = paint_height;
+            pixel.f.a = 1.0f;  // full opacity — overwrite entire tile
 
             for (int x = 0; x < tile_resolution.x; ++x)
             {

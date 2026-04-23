@@ -7,13 +7,13 @@ using namespace Unigine;
 LandscapeSaveManager::LandscapeSaveManager(bool debug_logging)
     : debug_logging_(debug_logging)
 {
-    save_file_connection_id_ = Landscape::getEventSaveFile().connect(
+    Landscape::getEventSaveFile().connect(save_file_connection_,
         [this](const UGUID& guid, int operation_id, const char* path_new_diff, const char* path_old_diff)
         {
             onSaveFile(guid, operation_id, path_new_diff, path_old_diff);
         });
 
-    pre_world_save_connection_id_ = World::getEventPreWorldSave().connect(
+    World::getEventPreWorldSave().connect(pre_world_save_connection_,
         [this](const char*)
         {
             forceFlush();
@@ -22,17 +22,8 @@ LandscapeSaveManager::LandscapeSaveManager(bool debug_logging)
 
 LandscapeSaveManager::~LandscapeSaveManager()
 {
-    if (save_file_connection_id_)
-    {
-        Landscape::getEventSaveFile().disconnect(save_file_connection_id_);
-        save_file_connection_id_ = nullptr;
-    }
-
-    if (pre_world_save_connection_id_)
-    {
-        World::getEventPreWorldSave().disconnect(pre_world_save_connection_id_);
-        pre_world_save_connection_id_ = nullptr;
-    }
+    save_file_connection_.disconnect();
+    pre_world_save_connection_.disconnect();
 
     pending_save_requests_.clear();
     inflight_saves_.clear();
@@ -103,7 +94,7 @@ void LandscapeSaveManager::forceFlush()
 
 std::string LandscapeSaveManager::guidKey(const UGUID& guid)
 {
-    return guid.isValid() ? std::string(guid.getString()) : std::string();
+    return guid.isValid() ? std::string(guid.makeString().get()) : std::string();
 }
 
 void LandscapeSaveManager::queueSave(const std::string& key, const UGUID& guid, std::uint64_t version)

@@ -44,6 +44,6 @@ private:
     int transaction_depth_ = 0;
     bool debug_logging_ = false;
 
-    Unigine::EventConnectionId save_file_connection_id_ = nullptr;
-    Unigine::EventConnectionId pre_world_save_connection_id_ = nullptr;
+    Unigine::EventConnection save_file_connection_;
+    Unigine::EventConnection pre_world_save_connection_;
 };
