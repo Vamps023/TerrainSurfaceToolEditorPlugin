@@ -1,6 +1,6 @@
 @echo off
 REM Build with Ninja generator
-echo === Building Vamps Terrain Editor Plugin (Ninja) ===
+echo === Building Sogeclair Terrain Editor Plugin (Ninja) ===
 setlocal
 
 REM Set paths
@@ -19,7 +19,7 @@ if not exist "%LOCAL_PATHS%" (
     echo local_paths.cmake created. Edit it if your paths differ.
 )
 
-set DEPLOY_DIR=D:\Unigine\unigine_project\bin\plugins\Vamps\TerrainSurfaceTool
+set DEPLOY_DIR=D:\Unigine\unigine_project\bin\plugins\Sogeclair\TerrainSurfaceTool
 set PROJECT_DATA_DIR=D:\Unigine\unigine_project\data
 
 echo Project Root: %PROJECT_ROOT%

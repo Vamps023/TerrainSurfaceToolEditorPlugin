@@ -46,22 +46,22 @@ private:
     void setupUi();
     void appendLog(const QString& message);
     TerrainBrushSettings currentSettings() const;
-    void refreshLandscapeTileOptions(bool preserve_selection = true);
+    void refreshLandscapeTileOptions(bool preserveSelection = true);
     Unigine::LandscapeLayerMapPtr currentLandscapeTile() const;
 
-    UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin_ = nullptr;
+    UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin = nullptr;
 
-    QComboBox* combo_surface_name_ = nullptr;
-    QComboBox* combo_landscape_tile_ = nullptr;
-    QPushButton* button_refresh_tiles_ = nullptr;
-    QComboBox* combo_mask_name_ = nullptr;
-    QDoubleSpinBox* spin_flat_distance_ = nullptr;
-    QDoubleSpinBox* spin_falloff_distance_ = nullptr;
-    QPushButton* button_pull_ = nullptr;
-    QPushButton* button_mask_ = nullptr;
-    QPushButton* button_paint_white_ = nullptr;
-    QProgressBar* progress_bar_ = nullptr;
-    QTextEdit* status_text_ = nullptr;
-    QTimer* selection_check_timer_ = nullptr;
-    QSet<int> previous_selection_ids_;
+    QComboBox* comboSurfaceName = nullptr;
+    QComboBox* comboLandscapeTile = nullptr;
+    QPushButton* buttonRefreshTiles = nullptr;
+    QComboBox* comboMaskName = nullptr;
+    QDoubleSpinBox* spinFlatDistance = nullptr;
+    QDoubleSpinBox* spinFalloffDistance = nullptr;
+    QPushButton* buttonPull = nullptr;
+    QPushButton* buttonMask = nullptr;
+    QPushButton* buttonPaintWhite = nullptr;
+    QProgressBar* progressBar = nullptr;
+    QTextEdit* statusText = nullptr;
+    QTimer* selectionCheckTimer = nullptr;
+    QSet<int> previousSelectionIds;
 };

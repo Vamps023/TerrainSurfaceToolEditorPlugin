@@ -13,7 +13,7 @@
 class LandscapeSaveManager
 {
 public:
-    explicit LandscapeSaveManager(bool debug_logging = false);
+    explicit LandscapeSaveManager(bool debugLogging = false);
     ~LandscapeSaveManager();
 
     void beginTransaction();
@@ -31,19 +31,19 @@ private:
 
     static std::string guidKey(const Unigine::UGUID& guid);
     void queueSave(const std::string& key, const Unigine::UGUID& guid, std::uint64_t version);
-    void onSaveFile(const Unigine::UGUID& guid, int operation_id,
-                    const char* path_new_diff, const char* path_old_diff);
+    void onSaveFile(const Unigine::UGUID& guid, int operationId,
+                    const char* pathNewDiff, const char* pathOldDiff);
     void logDebug(const char* format, ...) const;
 
-    std::unordered_map<std::string, Unigine::UGUID> dirty_guids_;
-    std::unordered_map<std::string, std::uint64_t> dirty_versions_;
-    std::unordered_map<int, PendingSaveRequest> pending_save_requests_;
-    std::unordered_set<std::string> inflight_saves_;
+    std::unordered_map<std::string, Unigine::UGUID> dirtyGuids;
+    std::unordered_map<std::string, std::uint64_t> dirtyVersions;
+    std::unordered_map<int, PendingSaveRequest> pendingSaveRequests;
+    std::unordered_set<std::string> inflightSaves;
 
-    std::uint64_t version_counter_ = 0;
-    int transaction_depth_ = 0;
-    bool debug_logging_ = false;
+    std::uint64_t versionCounter = 0;
+    int transactionDepth = 0;
+    bool debugLogging = false;
 
-    Unigine::EventConnection save_file_connection_;
-    Unigine::EventConnection pre_world_save_connection_;
+    Unigine::EventConnection saveFileConnection;
+    Unigine::EventConnection preWorldSaveConnection;
 };

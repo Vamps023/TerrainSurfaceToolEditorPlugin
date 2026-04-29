@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(TerrainSurfaceToolEditorPlugin)
 
-set(vendor_name Vamps)
+set(vendor_name Sogeclair)
 set(target_name TerrainSurfaceTool)
 
 # C++ standard

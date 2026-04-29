@@ -15,9 +15,14 @@
 
 using namespace Unigine;
 
+namespace
+{
+constexpr int kMaxLandscapeMaskIndex = 19;
+}
+
 TerrainToolPanel::TerrainToolPanel(UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin)
     : QWidget()
-    , plugin_(plugin)
+    , plugin(plugin)
 {
     setupUi();
     refreshLandscapeTileOptions(false);
@@ -25,146 +30,146 @@ TerrainToolPanel::TerrainToolPanel(UnigineEditor::TerrainSurfaceToolEditorPlugin
     setWindowTitle("Terrain Surface Tool");
     resize(400, 700);
 
-    QPalette dark_palette;
-    dark_palette.setColor(QPalette::Window, QColor(45, 45, 45));
-    dark_palette.setColor(QPalette::WindowText, Qt::white);
-    dark_palette.setColor(QPalette::Base, QColor(35, 35, 35));
-    dark_palette.setColor(QPalette::AlternateBase, QColor(45, 45, 45));
-    dark_palette.setColor(QPalette::ToolTipBase, Qt::white);
-    dark_palette.setColor(QPalette::ToolTipText, Qt::white);
-    dark_palette.setColor(QPalette::Text, Qt::white);
-    dark_palette.setColor(QPalette::Button, QColor(60, 60, 60));
-    dark_palette.setColor(QPalette::ButtonText, Qt::white);
-    dark_palette.setColor(QPalette::BrightText, Qt::red);
-    dark_palette.setColor(QPalette::Link, QColor(42, 130, 218));
-    dark_palette.setColor(QPalette::Highlight, QColor(42, 130, 218));
-    dark_palette.setColor(QPalette::HighlightedText, Qt::black);
-    setPalette(dark_palette);
+    QPalette darkPalette;
+    darkPalette.setColor(QPalette::Window, QColor(45, 45, 45));
+    darkPalette.setColor(QPalette::WindowText, Qt::white);
+    darkPalette.setColor(QPalette::Base, QColor(35, 35, 35));
+    darkPalette.setColor(QPalette::AlternateBase, QColor(45, 45, 45));
+    darkPalette.setColor(QPalette::ToolTipBase, Qt::white);
+    darkPalette.setColor(QPalette::ToolTipText, Qt::white);
+    darkPalette.setColor(QPalette::Text, Qt::white);
+    darkPalette.setColor(QPalette::Button, QColor(60, 60, 60));
+    darkPalette.setColor(QPalette::ButtonText, Qt::white);
+    darkPalette.setColor(QPalette::BrightText, Qt::red);
+    darkPalette.setColor(QPalette::Link, QColor(42, 130, 218));
+    darkPalette.setColor(QPalette::Highlight, QColor(42, 130, 218));
+    darkPalette.setColor(QPalette::HighlightedText, Qt::black);
+    setPalette(darkPalette);
 }
 
 void TerrainToolPanel::setupUi()
 {
-    auto* main_layout = new QVBoxLayout(this);
-    main_layout->setSpacing(10);
-    main_layout->setContentsMargins(15, 15, 15, 15);
+    auto* mainLayout = new QVBoxLayout(this);
+    mainLayout->setSpacing(10);
+    mainLayout->setContentsMargins(15, 15, 15, 15);
 
     auto* header = new QLabel("Terrain Surface Tool", this);
-    QFont header_font = header->font();
-    header_font.setBold(true);
-    header_font.setPointSize(14);
-    header->setFont(header_font);
-    main_layout->addWidget(header);
+    QFont headerFont = header->font();
+    headerFont.setBold(true);
+    headerFont.setPointSize(14);
+    header->setFont(headerFont);
+    mainLayout->addWidget(header);
 
-    auto* surface_group = new QGroupBox("Surface Filter", this);
-    auto* surface_layout = new QHBoxLayout(surface_group);
-    surface_layout->addWidget(new QLabel("Surface:", this));
-    combo_surface_name_ = new QComboBox(this);
-    combo_surface_name_->setToolTip("Surface name from selected mesh");
-    surface_layout->addWidget(combo_surface_name_);
-    main_layout->addWidget(surface_group);
+    auto* surfaceGroup = new QGroupBox("Surface Filter", this);
+    auto* surfaceLayout = new QHBoxLayout(surfaceGroup);
+    surfaceLayout->addWidget(new QLabel("Surface:", this));
+    comboSurfaceName = new QComboBox(this);
+    comboSurfaceName->setToolTip("Surface name from selected mesh");
+    surfaceLayout->addWidget(comboSurfaceName);
+    mainLayout->addWidget(surfaceGroup);
 
-    auto* landscape_group = new QGroupBox("Landscape Target", this);
-    auto* landscape_layout = new QVBoxLayout(landscape_group);
-    auto* tile_row = new QHBoxLayout();
-    tile_row->addWidget(new QLabel("Tile:", this));
-    combo_landscape_tile_ = new QComboBox(this);
-    combo_landscape_tile_->setToolTip("Choose a specific LandscapeLayerMap tile, or leave it on All Tiles.");
-    tile_row->addWidget(combo_landscape_tile_, 1);
-    button_refresh_tiles_ = new QPushButton(this);
-    button_refresh_tiles_->setIcon(QApplication::style()->standardIcon(QStyle::SP_BrowserReload));
-    button_refresh_tiles_->setToolTip("Refresh landscape tiles and surface list");
-    button_refresh_tiles_->setMaximumWidth(32);
-    connect(button_refresh_tiles_, &QPushButton::clicked, this, &TerrainToolPanel::onRefreshLandscapeTiles);
-    tile_row->addWidget(button_refresh_tiles_);
-    landscape_layout->addLayout(tile_row);
-    main_layout->addWidget(landscape_group);
+    auto* landscapeGroup = new QGroupBox("Landscape Target", this);
+    auto* landscapeLayout = new QVBoxLayout(landscapeGroup);
+    auto* tileRow = new QHBoxLayout();
+    tileRow->addWidget(new QLabel("Tile:", this));
+    comboLandscapeTile = new QComboBox(this);
+    comboLandscapeTile->setToolTip("Choose a specific LandscapeLayerMap tile, or leave it on All Tiles.");
+    tileRow->addWidget(comboLandscapeTile, 1);
+    buttonRefreshTiles = new QPushButton(this);
+    buttonRefreshTiles->setIcon(QApplication::style()->standardIcon(QStyle::SP_BrowserReload));
+    buttonRefreshTiles->setToolTip("Refresh landscape tiles and surface list");
+    buttonRefreshTiles->setMaximumWidth(32);
+    connect(buttonRefreshTiles, &QPushButton::clicked, this, &TerrainToolPanel::onRefreshLandscapeTiles);
+    tileRow->addWidget(buttonRefreshTiles);
+    landscapeLayout->addLayout(tileRow);
+    mainLayout->addWidget(landscapeGroup);
 
-    auto* mask_group = new QGroupBox("Landscape Mask Slot", this);
-    auto* mask_layout = new QHBoxLayout(mask_group);
-    mask_layout->addWidget(new QLabel("Mask:", this));
-    combo_mask_name_ = new QComboBox(this);
-    combo_mask_name_->setToolTip(
+    auto* maskGroup = new QGroupBox("Landscape Mask Slot", this);
+    auto* maskLayout = new QHBoxLayout(maskGroup);
+    maskLayout->addWidget(new QLabel("Mask:", this));
+    comboMaskName = new QComboBox(this);
+    comboMaskName->setToolTip(
         "Select the logical landscape mask.\n"
         "Mask 0-3 belong to mask_0 (R/G/B/A), mask 4-7 belong to mask_1, and so on.");
-    for (int mask_index = 0; mask_index < 20; ++mask_index)
+    for (int maskIndex = 0; maskIndex < 20; ++maskIndex)
     {
-        const int mask_page = mask_index / 4;
-        const QChar channel("RGBA"[mask_index % 4]);
-        combo_mask_name_->addItem(
-            QString("Mask %1  (mask_%2 / %3)").arg(mask_index).arg(mask_page).arg(channel),
-            mask_index);
+        const int maskPage = maskIndex / 4;
+        const QChar channel("RGBA"[maskIndex % 4]);
+        comboMaskName->addItem(
+            QString("Mask %1  (mask_%2 / %3)").arg(maskIndex).arg(maskPage).arg(channel),
+            maskIndex);
     }
-    mask_layout->addWidget(combo_mask_name_);
-    main_layout->addWidget(mask_group);
+    maskLayout->addWidget(comboMaskName);
+    mainLayout->addWidget(maskGroup);
 
-    auto* brush_group = new QGroupBox("Brush Settings", this);
-    auto* brush_layout = new QVBoxLayout(brush_group);
+    auto* brushGroup = new QGroupBox("Brush Settings", this);
+    auto* brushLayout = new QVBoxLayout(brushGroup);
 
-    auto addSpinRow = [&](const QString& label, double min_value, double max_value,
-                          double default_value, double step, const QString& tooltip) -> QDoubleSpinBox*
+    auto addSpinRow = [&](const QString& label, double minValue, double maxValue,
+                          double defaultValue, double step, const QString& tooltip) -> QDoubleSpinBox*
     {
         auto* row = new QHBoxLayout();
         row->addWidget(new QLabel(label, this));
         auto* spin = new QDoubleSpinBox(this);
-        spin->setRange(min_value, max_value);
-        spin->setValue(default_value);
+        spin->setRange(minValue, maxValue);
+        spin->setValue(defaultValue);
         spin->setSingleStep(step);
         spin->setToolTip(tooltip);
         row->addWidget(spin);
-        brush_layout->addLayout(row);
+        brushLayout->addLayout(row);
         return spin;
     };
 
-    spin_flat_distance_ = addSpinRow("Flat Distance:", 0.0, 500.0, 5.0, 1.0,
+    spinFlatDistance = addSpinRow("Flat Distance:", 0.0, 500.0, 5.0, 1.0,
                                      "Padding (in world units) around mesh kept at the exact\n"
                                      "mesh height. Set to 0 to blend from mesh edge directly.");
-    spin_falloff_distance_ = addSpinRow("Falloff Distance:", 0.0, 2000.0, 20.0, 1.0,
+    spinFalloffDistance = addSpinRow("Falloff Distance:", 0.0, 2000.0, 20.0, 1.0,
                                         "Smooth blend distance (in world units) where terrain\n"
                                         "transitions from the mesh height back to original.");
 
-    main_layout->addWidget(brush_group);
+    mainLayout->addWidget(brushGroup);
 
-    auto* actions_group = new QGroupBox("Actions", this);
-    auto* actions_layout = new QVBoxLayout(actions_group);
+    auto* actionsGroup = new QGroupBox("Actions", this);
+    auto* actionsLayout = new QVBoxLayout(actionsGroup);
 
-    button_pull_ = new QPushButton("Apply Pull Terrain", this);
-    button_pull_->setStyleSheet(
+    buttonPull = new QPushButton("Apply Pull Terrain", this);
+    buttonPull->setStyleSheet(
         "QPushButton { background-color: #2a7f2a; color: white; padding: 10px; font-weight: bold; }");
-    connect(button_pull_, &QPushButton::clicked, this, &TerrainToolPanel::onApplyPullTerrain);
-    actions_layout->addWidget(button_pull_);
+    connect(buttonPull, &QPushButton::clicked, this, &TerrainToolPanel::onApplyPullTerrain);
+    actionsLayout->addWidget(buttonPull);
 
-    button_mask_ = new QPushButton("Apply to Landscape Mask", this);
-    button_mask_->setStyleSheet(
+    buttonMask = new QPushButton("Apply to Landscape Mask", this);
+    buttonMask->setStyleSheet(
         "QPushButton { background-color: #7f2a7f; color: white; padding: 8px; }");
-    connect(button_mask_, &QPushButton::clicked, this, &TerrainToolPanel::onApplyToMask);
-    actions_layout->addWidget(button_mask_);
+    connect(buttonMask, &QPushButton::clicked, this, &TerrainToolPanel::onApplyToMask);
+    actionsLayout->addWidget(buttonMask);
 
-    button_paint_white_ = new QPushButton("Paint Complete White Height", this);
-    button_paint_white_->setStyleSheet(
+    buttonPaintWhite = new QPushButton("Paint Complete White Height", this);
+    buttonPaintWhite->setStyleSheet(
         "QPushButton { background-color: #2a7f8f; color: white; padding: 8px; }");
-    connect(button_paint_white_, &QPushButton::clicked, this, &TerrainToolPanel::onPaintCompleteWhite);
-    actions_layout->addWidget(button_paint_white_);
+    connect(buttonPaintWhite, &QPushButton::clicked, this, &TerrainToolPanel::onPaintCompleteWhite);
+    actionsLayout->addWidget(buttonPaintWhite);
 
-    main_layout->addWidget(actions_group);
+    mainLayout->addWidget(actionsGroup);
 
-    progress_bar_ = new QProgressBar(this);
-    progress_bar_->setRange(0, 100);
-    progress_bar_->setValue(0);
-    main_layout->addWidget(progress_bar_);
+    progressBar = new QProgressBar(this);
+    progressBar->setRange(0, 100);
+    progressBar->setValue(0);
+    mainLayout->addWidget(progressBar);
 
-    main_layout->addWidget(new QLabel("Status:", this));
-    status_text_ = new QTextEdit(this);
-    status_text_->setMaximumHeight(150);
-    status_text_->setReadOnly(true);
-    status_text_->setPlainText("Ready. Select mesh nodes in editor and click Apply.");
-    main_layout->addWidget(status_text_);
+    mainLayout->addWidget(new QLabel("Status:", this));
+    statusText = new QTextEdit(this);
+    statusText->setMaximumHeight(150);
+    statusText->setReadOnly(true);
+    statusText->setPlainText("Ready. Select mesh nodes in editor and click Apply.");
+    mainLayout->addWidget(statusText);
 
-    main_layout->addStretch();
+    mainLayout->addStretch();
 
-    selection_check_timer_ = new QTimer(this);
-    selection_check_timer_->setInterval(500);
-    connect(selection_check_timer_, &QTimer::timeout, this, &TerrainToolPanel::checkSelectionChanged);
-    selection_check_timer_->start();
+    selectionCheckTimer = new QTimer(this);
+    selectionCheckTimer->setInterval(500);
+    connect(selectionCheckTimer, &QTimer::timeout, this, &TerrainToolPanel::checkSelectionChanged);
+    selectionCheckTimer->start();
 }
 
 void TerrainToolPanel::showEvent(QShowEvent* event)
@@ -183,17 +188,17 @@ void TerrainToolPanel::onRefreshLandscapeTiles()
 
 void TerrainToolPanel::refreshSurfaceOptions()
 {
-    if (!combo_surface_name_ || !plugin_)
+    if (!comboSurfaceName || !plugin)
         return;
 
-    const QString current_text = combo_surface_name_->currentText();
-    combo_surface_name_->blockSignals(true);
-    combo_surface_name_->clear();
+    const QString currentText = comboSurfaceName->currentText();
+    comboSurfaceName->blockSignals(true);
+    comboSurfaceName->clear();
 
-    const std::vector<NodePtr> selected_nodes = plugin_->getSelectedMeshNodes();
-    QSet<QString> surface_names;
+    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
+    QSet<QString> surfaceNames;
 
-    for (const auto& node : selected_nodes)
+    for (const auto& node : selectedNodes)
     {
         if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
             continue;
@@ -206,52 +211,52 @@ void TerrainToolPanel::refreshSurfaceOptions()
         {
             QString name = QString::fromUtf8(mesh->getSurfaceName(i));
             if (!name.isEmpty())
-                surface_names.insert(name);
+                surfaceNames.insert(name);
         }
     }
 
-    QList<QString> sorted_names = surface_names.values();
-    std::sort(sorted_names.begin(), sorted_names.end());
+    QList<QString> sortedNames = surfaceNames.values();
+    std::sort(sortedNames.begin(), sortedNames.end());
 
-    for (const QString& name : sorted_names)
-        combo_surface_name_->addItem(name);
+    for (const QString& name : sortedNames)
+        comboSurfaceName->addItem(name);
 
-    if (!current_text.isEmpty() && sorted_names.contains(current_text))
-        combo_surface_name_->setCurrentText(current_text);
-    else if (combo_surface_name_->count() > 0)
-        combo_surface_name_->setCurrentIndex(0);
+    if (!currentText.isEmpty() && sortedNames.contains(currentText))
+        comboSurfaceName->setCurrentText(currentText);
+    else if (comboSurfaceName->count() > 0)
+        comboSurfaceName->setCurrentIndex(0);
 
-    combo_surface_name_->blockSignals(false);
+    comboSurfaceName->blockSignals(false);
 }
 
 void TerrainToolPanel::checkSelectionChanged()
 {
-    if (!plugin_)
+    if (!plugin)
         return;
 
-    const std::vector<NodePtr> selected_nodes = plugin_->getSelectedMeshNodes();
-    QSet<int> current_selection_ids;
-    for (const auto& node : selected_nodes)
+    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
+    QSet<int> currentSelectionIds;
+    for (const auto& node : selectedNodes)
     {
         if (node)
-            current_selection_ids.insert(node->getID());
+            currentSelectionIds.insert(node->getID());
     }
 
-    if (current_selection_ids != previous_selection_ids_)
+    if (currentSelectionIds != previousSelectionIds)
     {
-        previous_selection_ids_ = current_selection_ids;
+        previousSelectionIds = currentSelectionIds;
         refreshSurfaceOptions();
     }
 }
 
 void TerrainToolPanel::appendLog(const QString& message)
 {
-    if (!status_text_)
+    if (!statusText)
         return;
 
-    status_text_->append(message);
-    if (auto* scroll_bar = status_text_->verticalScrollBar())
-        scroll_bar->setValue(scroll_bar->maximum());
+    statusText->append(message);
+    if (auto* scrollBar = statusText->verticalScrollBar())
+        scrollBar->setValue(scrollBar->maximum());
 
     Log::message("%s\n", message.toUtf8().constData());
 }
@@ -259,116 +264,116 @@ void TerrainToolPanel::appendLog(const QString& message)
 TerrainBrushSettings TerrainToolPanel::currentSettings() const
 {
     TerrainBrushSettings settings;
-    settings.brush_size = 10.0;  // legacy default; only used by mask apply path
-    settings.flat_distance = spin_flat_distance_ ? spin_flat_distance_->value() : 30.0;
-    settings.falloff_distance = spin_falloff_distance_ ? spin_falloff_distance_->value() : 30.0;
-    settings.smoothing_strength = 0.5;
-    settings.clamp_to_original = false;
+    settings.brushSize = 10.0;  // legacy default; only used by mask apply path
+    settings.flatDistance = spinFlatDistance ? spinFlatDistance->value() : 30.0;
+    settings.falloffDistance = spinFalloffDistance ? spinFalloffDistance->value() : 30.0;
+    settings.smoothingStrength = 0.5;
+    settings.clampToOriginal = false;
     return settings;
 }
 
-void TerrainToolPanel::refreshLandscapeTileOptions(bool preserve_selection)
+void TerrainToolPanel::refreshLandscapeTileOptions(bool preserveSelection)
 {
-    if (!combo_landscape_tile_ || !plugin_)
+    if (!comboLandscapeTile || !plugin)
         return;
 
-    const QVariant previous_selection = preserve_selection ? combo_landscape_tile_->currentData() : QVariant();
-    const auto terrains = plugin_->getLandscapeTerrains();
+    const QVariant previousSelection = preserveSelection ? comboLandscapeTile->currentData() : QVariant();
+    const auto terrains = plugin->getLandscapeTerrains();
     const auto terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
 
-    combo_landscape_tile_->blockSignals(true);
-    combo_landscape_tile_->clear();
-    combo_landscape_tile_->addItem("All Tiles", -1);
+    comboLandscapeTile->blockSignals(true);
+    comboLandscapeTile->clear();
+    comboLandscapeTile->addItem("All Tiles", -1);
 
     if (terrain)
     {
-        const auto layer_maps = plugin_->getLandscapeLayerMaps(terrain);
-        for (const auto& layer_map : layer_maps)
+        const auto layerMaps = plugin->getLandscapeLayerMaps(terrain);
+        for (const auto& layerMap : layerMaps)
         {
-            if (!layer_map)
+            if (!layerMap)
                 continue;
 
-            QString tile_name = QString::fromUtf8(layer_map->getName());
-            if (tile_name.trimmed().isEmpty())
-                tile_name = QString("LandscapeLayerMap %1").arg(layer_map->getID());
-            combo_landscape_tile_->addItem(tile_name, layer_map->getID());
+            QString tileName = QString::fromUtf8(layerMap->getName());
+            if (tileName.trimmed().isEmpty())
+                tileName = QString("LandscapeLayerMap %1").arg(layerMap->getID());
+            comboLandscapeTile->addItem(tileName, layerMap->getID());
         }
     }
 
-    int selection_index = 0;
-    if (previous_selection.isValid())
+    int selectionIndex = 0;
+    if (previousSelection.isValid())
     {
-        const int previous_index = combo_landscape_tile_->findData(previous_selection);
-        if (previous_index >= 0)
-            selection_index = previous_index;
+        const int previousIndex = comboLandscapeTile->findData(previousSelection);
+        if (previousIndex >= 0)
+            selectionIndex = previousIndex;
     }
-    combo_landscape_tile_->setCurrentIndex(selection_index);
-    combo_landscape_tile_->blockSignals(false);
+    comboLandscapeTile->setCurrentIndex(selectionIndex);
+    comboLandscapeTile->blockSignals(false);
 }
 
 LandscapeLayerMapPtr TerrainToolPanel::currentLandscapeTile() const
 {
-    if (!plugin_ || !combo_landscape_tile_)
+    if (!plugin || !comboLandscapeTile)
         return nullptr;
 
     bool ok = false;
-    const int tile_id = combo_landscape_tile_->currentData().toInt(&ok);
-    if (!ok || tile_id < 0)
+    const int tileId = comboLandscapeTile->currentData().toInt(&ok);
+    if (!ok || tileId < 0)
         return nullptr;
 
-    return plugin_->getLandscapeLayerMapById(tile_id);
+    return plugin->getLandscapeLayerMapById(tileId);
 }
 
 void TerrainToolPanel::onApplyPullTerrain()
 {
     refreshLandscapeTileOptions(true);
     appendLog("=== Pull Terrain To Surface ===");
-    progress_bar_->setValue(0);
+    progressBar->setValue(0);
 
-    if (!plugin_ || !plugin_->manipulator())
+    if (!plugin || !plugin->manipulator())
     {
         appendLog("ERROR: Plugin is not initialized.");
         return;
     }
 
-    const std::vector<NodePtr> selected_nodes = plugin_->getSelectedMeshNodes();
-    if (selected_nodes.empty())
+    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
+    if (selectedNodes.empty())
     {
         appendLog("ERROR: No mesh nodes selected.");
         return;
     }
 
-    const std::string surface_name = combo_surface_name_->currentText().toStdString();
-    if (surface_name.empty())
+    const std::string surfaceName = comboSurfaceName->currentText().toStdString();
+    if (surfaceName.empty())
     {
         appendLog("ERROR: Surface name is empty.");
         return;
     }
 
     const TerrainBrushSettings settings = currentSettings();
-    const auto terrains = plugin_->getLandscapeTerrains();
-    const ObjectLandscapeTerrainPtr target_terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
-    const LandscapeLayerMapPtr target_tile = currentLandscapeTile();
-    if (!target_terrain)
+    const auto terrains = plugin->getLandscapeTerrains();
+    const ObjectLandscapeTerrainPtr targetTerrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
+    const LandscapeLayerMapPtr targetTile = currentLandscapeTile();
+    if (!targetTerrain)
     {
         appendLog("ERROR: No landscape selected.");
         return;
     }
-    appendLog(QString("Found %1 mesh node(s)").arg(selected_nodes.size()));
-    progress_bar_->setValue(10);
+    appendLog(QString("Found %1 mesh node(s)").arg(selectedNodes.size()));
+    progressBar->setValue(10);
 
-    const bool queued = plugin_->manipulator()->pullTerrainToSurface(
-        selected_nodes,
-        target_terrain,
-        target_tile,
-        surface_name,
+    const bool queued = plugin->manipulator()->pullTerrainToSurface(
+        selectedNodes,
+        targetTerrain,
+        targetTile,
+        surfaceName,
         settings,
         [this](const std::string& message)
         {
             appendLog(QString::fromStdString(message));
         });
 
-    progress_bar_->setValue(100);
+    progressBar->setValue(100);
     appendLog(queued ? "=== Pull Terrain Complete ===" : "=== Pull Terrain Complete (No Changes) ===");
 }
 
@@ -376,61 +381,61 @@ void TerrainToolPanel::onApplyToMask()
 {
     refreshLandscapeTileOptions(true);
     appendLog("=== Apply to Landscape Mask ===");
-    progress_bar_->setValue(0);
+    progressBar->setValue(0);
 
-    if (!plugin_ || !plugin_->manipulator())
+    if (!plugin || !plugin->manipulator())
     {
         appendLog("ERROR: Plugin is not initialized.");
         return;
     }
 
-    const std::vector<NodePtr> selected_nodes = plugin_->getSelectedMeshNodes();
-    if (selected_nodes.empty())
+    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
+    if (selectedNodes.empty())
     {
         appendLog("ERROR: No mesh nodes selected.");
         return;
     }
 
-    const std::string surface_name = combo_surface_name_->currentText().toStdString();
-    if (surface_name.empty())
+    const std::string surfaceName = comboSurfaceName->currentText().toStdString();
+    if (surfaceName.empty())
     {
         appendLog("ERROR: Surface name is empty.");
         return;
     }
 
     bool ok = false;
-    const int mask_index = combo_mask_name_ ? combo_mask_name_->currentData().toInt(&ok) : -1;
-    if (!ok || mask_index < 0 || mask_index > 19)
+    const int maskIndex = comboMaskName ? comboMaskName->currentData().toInt(&ok) : -1;
+    if (!ok || maskIndex < 0 || maskIndex > kMaxLandscapeMaskIndex)
     {
         appendLog("ERROR: Invalid mask slot selected.");
         return;
     }
 
     const TerrainBrushSettings settings = currentSettings();
-    const auto terrains = plugin_->getLandscapeTerrains();
-    const ObjectLandscapeTerrainPtr target_terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
-    const LandscapeLayerMapPtr target_tile = currentLandscapeTile();
-    if (!target_terrain)
+    const auto terrains = plugin->getLandscapeTerrains();
+    const ObjectLandscapeTerrainPtr targetTerrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
+    const LandscapeLayerMapPtr targetTile = currentLandscapeTile();
+    if (!targetTerrain)
     {
         appendLog("ERROR: No landscape selected.");
         return;
     }
-    appendLog(QString("Found %1 mesh node(s)").arg(selected_nodes.size()));
-    progress_bar_->setValue(10);
+    appendLog(QString("Found %1 mesh node(s)").arg(selectedNodes.size()));
+    progressBar->setValue(10);
 
-    const bool queued = plugin_->manipulator()->applyLandscapeMask(
-        selected_nodes,
-        target_terrain,
-        target_tile,
-        surface_name,
+    const bool queued = plugin->manipulator()->applyLandscapeMask(
+        selectedNodes,
+        targetTerrain,
+        targetTile,
+        surfaceName,
         settings,
-        mask_index,
+        maskIndex,
         [this](const std::string& message)
         {
             appendLog(QString::fromStdString(message));
         });
 
-    progress_bar_->setValue(100);
+    progressBar->setValue(100);
     appendLog(queued ? "=== Apply to Landscape Mask Complete ==="
                      : "=== Apply to Landscape Mask Complete (No Changes) ===");
 }
@@ -439,45 +444,45 @@ void TerrainToolPanel::onApplyToMask()
 void TerrainToolPanel::onPaintCompleteWhite()
 {
     appendLog("=== Paint Complete White Height ===");
-    progress_bar_->setValue(0);
+    progressBar->setValue(0);
 
-    if (!plugin_ || !plugin_->manipulator())
+    if (!plugin || !plugin->manipulator())
     {
         appendLog("ERROR: Plugin is not initialized.");
         return;
     }
 
-    const std::vector<NodePtr> selected_nodes = plugin_->getSelectedMeshNodes();
-    if (selected_nodes.empty())
+    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
+    if (selectedNodes.empty())
     {
         appendLog("ERROR: No mesh nodes selected.");
         return;
     }
 
-    progress_bar_->setValue(10);
-    const auto terrains = plugin_->getLandscapeTerrains();
-    const ObjectLandscapeTerrainPtr target_terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
-    const LandscapeLayerMapPtr target_tile = currentLandscapeTile();
-    if (!target_terrain)
+    progressBar->setValue(10);
+    const auto terrains = plugin->getLandscapeTerrains();
+    const ObjectLandscapeTerrainPtr targetTerrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
+    const LandscapeLayerMapPtr targetTile = currentLandscapeTile();
+    if (!targetTerrain)
     {
         appendLog("ERROR: No landscape selected.");
         return;
     }
 
-    appendLog(QString("Found %1 mesh node(s)").arg(selected_nodes.size()));
-    progress_bar_->setValue(50);
+    appendLog(QString("Found %1 mesh node(s)").arg(selectedNodes.size()));
+    progressBar->setValue(50);
 
     const TerrainBrushSettings settings = currentSettings();
-    const bool queued = plugin_->manipulator()->paintWhiteHeight(
-        selected_nodes,
-        target_terrain,
-        target_tile,
+    const bool queued = plugin->manipulator()->paintWhiteHeight(
+        selectedNodes,
+        targetTerrain,
+        targetTile,
         settings,
         [this](const std::string& message)
         {
             appendLog(QString::fromStdString(message));
         });
 
-    progress_bar_->setValue(100);
+    progressBar->setValue(100);
     appendLog(queued ? "=== Paint White Complete ===" : "=== Paint White Complete (No Changes) ===");
 }

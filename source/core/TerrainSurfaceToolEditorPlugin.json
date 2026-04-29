@@ -1,6 +1,6 @@
 {
   "Name": "TerrainSurfaceToolEditorPlugin",
-  "Vendor": "Vamps",
+  "Vendor": "Sogeclair",
   "Description": "Pull Terrain To Surface - Modifies terrain to match mesh object surfaces",
   "Version": "1.0.0.0",
   "CompatVersion": "1.0.0.0",

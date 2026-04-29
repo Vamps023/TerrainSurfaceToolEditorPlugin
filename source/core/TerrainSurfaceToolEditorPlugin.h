@@ -34,11 +34,11 @@ public:
 
     std::vector<Unigine::NodePtr> getSelectedMeshNodes() const;
     std::vector<Unigine::ObjectLandscapeTerrainPtr> getLandscapeTerrains() const;
-    Unigine::ObjectLandscapeTerrainPtr getLandscapeTerrainById(int node_id) const;
+    Unigine::ObjectLandscapeTerrainPtr getLandscapeTerrainById(int nodeId) const;
     std::vector<Unigine::LandscapeLayerMapPtr> getLandscapeLayerMaps(
         const Unigine::ObjectLandscapeTerrainPtr& terrain) const;
-    Unigine::LandscapeLayerMapPtr getLandscapeLayerMapById(int node_id) const;
-    TerrainManipulator* manipulator() const { return terrain_manipulator_.get(); }
+    Unigine::LandscapeLayerMapPtr getLandscapeLayerMapById(int nodeId) const;
+    TerrainManipulator* manipulator() const { return terrainManipulator.get(); }
 
 private slots:
     void openTerrainTool();
@@ -46,12 +46,12 @@ private slots:
 private:
     void setupMenu();
 
-    std::unique_ptr<LandscapeSaveManager> save_manager_;
-    std::unique_ptr<TerrainManipulator> terrain_manipulator_;
-    std::unique_ptr<TerrainToolPanel> terrain_tool_panel_;
+    std::unique_ptr<LandscapeSaveManager> saveManager;
+    std::unique_ptr<TerrainManipulator> terrainManipulator;
+    std::unique_ptr<TerrainToolPanel> terrainToolPanel;
 
-    QMenu* vamps_menu_ = nullptr;
-    QAction* terrain_tool_action_ = nullptr;
-    bool owns_menu_ = false;
+    QMenu* pluginMenu = nullptr;
+    QAction* terrainToolAction = nullptr;
+    bool ownsMenu = false;
 };
 }

@@ -29,12 +29,12 @@ bool TerrainSurfaceToolEditorPlugin::init()
 {
     try
     {
-        save_manager_ = std::make_unique<LandscapeSaveManager>(false);
-        terrain_manipulator_ = std::make_unique<TerrainManipulator>(*save_manager_);
-        terrain_tool_panel_ = std::make_unique<TerrainToolPanel>(this);
+        saveManager = std::make_unique<LandscapeSaveManager>(false);
+        terrainManipulator = std::make_unique<TerrainManipulator>(*saveManager);
+        terrainToolPanel = std::make_unique<TerrainToolPanel>(this);
 
         setupMenu();
-        WindowManager::add(terrain_tool_panel_.get(), WindowManager::AreaType::ROOT_AREA_RIGHT);
+        WindowManager::add(terrainToolPanel.get(), WindowManager::AreaType::ROOT_AREA_RIGHT);
         return true;
     }
     catch (const std::exception& exception)
@@ -46,126 +46,126 @@ bool TerrainSurfaceToolEditorPlugin::init()
 
 void TerrainSurfaceToolEditorPlugin::shutdown()
 {
-    if (terrain_manipulator_)
-        terrain_manipulator_->flushPendingSaves();
+    if (terrainManipulator)
+        terrainManipulator->flushPendingSaves();
 
-    if (vamps_menu_ && terrain_tool_action_)
-        vamps_menu_->removeAction(terrain_tool_action_);
+    if (pluginMenu && terrainToolAction)
+        pluginMenu->removeAction(terrainToolAction);
 
-    if (terrain_tool_action_)
+    if (terrainToolAction)
     {
-        delete terrain_tool_action_;
-        terrain_tool_action_ = nullptr;
+        delete terrainToolAction;
+        terrainToolAction = nullptr;
     }
 
-    if (terrain_tool_panel_)
-        WindowManager::remove(terrain_tool_panel_.get());
+    if (terrainToolPanel)
+        WindowManager::remove(terrainToolPanel.get());
 
-    terrain_tool_panel_.reset();
-    terrain_manipulator_.reset();
-    save_manager_.reset();
+    terrainToolPanel.reset();
+    terrainManipulator.reset();
+    saveManager.reset();
 
-    if (owns_menu_ && vamps_menu_)
+    if (ownsMenu && pluginMenu)
     {
-        delete vamps_menu_;
-        vamps_menu_ = nullptr;
-        owns_menu_ = false;
+        delete pluginMenu;
+        pluginMenu = nullptr;
+        ownsMenu = false;
     }
 }
 
 std::vector<NodePtr> TerrainSurfaceToolEditorPlugin::getSelectedMeshNodes() const
 {
-    std::vector<NodePtr> root_nodes;
-    const SelectorNodes* selector_nodes = Selection::getSelectorNodes();
-    if (!selector_nodes)
-        return root_nodes;
+    std::vector<NodePtr> rootNodes;
+    const SelectorNodes* selectorNodes = Selection::getSelectorNodes();
+    if (!selectorNodes)
+        return rootNodes;
 
-    const Vector<NodePtr>& selected_nodes = selector_nodes->getNodes();
-    root_nodes.reserve(selected_nodes.size());
-    for (const auto& node : selected_nodes)
-        root_nodes.push_back(node);
+    const Vector<NodePtr>& selectedNodes = selectorNodes->getNodes();
+    rootNodes.reserve(selectedNodes.size());
+    for (const auto& node : selectedNodes)
+        rootNodes.push_back(node);
 
-    return SurfaceRasterizer::collectMeshNodesRecursive(root_nodes);
+    return SurfaceRasterizer::collectMeshNodesRecursive(rootNodes);
 }
 
 std::vector<ObjectLandscapeTerrainPtr> TerrainSurfaceToolEditorPlugin::getLandscapeTerrains() const
 {
     std::vector<ObjectLandscapeTerrainPtr> terrains;
-    Vector<NodePtr> root_nodes;
-    World::getRootNodes(root_nodes);
+    Vector<NodePtr> rootNodes;
+    World::getRootNodes(rootNodes);
 
-    std::unordered_set<int> visited_node_ids;
-    terrains.reserve(root_nodes.size());
-    for (const auto& root : root_nodes)
-        NodeTreeWalker::collectNodesRecursive<Node::OBJECT_LANDSCAPE_TERRAIN, ObjectLandscapeTerrain>(root, terrains, visited_node_ids);
+    std::unordered_set<int> visitedNodeIds;
+    terrains.reserve(rootNodes.size());
+    for (const auto& root : rootNodes)
+        NodeTreeWalker::collectNodesRecursive<Node::OBJECT_LANDSCAPE_TERRAIN, ObjectLandscapeTerrain>(root, terrains, visitedNodeIds);
 
     return terrains;
 }
 
-ObjectLandscapeTerrainPtr TerrainSurfaceToolEditorPlugin::getLandscapeTerrainById(int node_id) const
+ObjectLandscapeTerrainPtr TerrainSurfaceToolEditorPlugin::getLandscapeTerrainById(int nodeId) const
 {
-    if (node_id < 0)
+    if (nodeId < 0)
         return Landscape::getActiveTerrain();
 
-    auto node = Node::getNode(node_id);
+    auto node = Node::getNode(nodeId);
     return checked_ptr_cast<ObjectLandscapeTerrain>(node);
 }
 
 std::vector<LandscapeLayerMapPtr> TerrainSurfaceToolEditorPlugin::getLandscapeLayerMaps(
     const ObjectLandscapeTerrainPtr& terrain) const
 {
-    std::vector<LandscapeLayerMapPtr> layer_maps;
+    std::vector<LandscapeLayerMapPtr> layerMaps;
     if (!terrain)
-        return layer_maps;
+        return layerMaps;
 
-    std::unordered_set<int> visited_node_ids;
-    NodeTreeWalker::collectNodesRecursive<Node::LANDSCAPE_LAYER_MAP, LandscapeLayerMap>(terrain, layer_maps, visited_node_ids);
+    std::unordered_set<int> visitedNodeIds;
+    NodeTreeWalker::collectNodesRecursive<Node::LANDSCAPE_LAYER_MAP, LandscapeLayerMap>(terrain, layerMaps, visitedNodeIds);
 
-    return layer_maps;
+    return layerMaps;
 }
 
-LandscapeLayerMapPtr TerrainSurfaceToolEditorPlugin::getLandscapeLayerMapById(int node_id) const
+LandscapeLayerMapPtr TerrainSurfaceToolEditorPlugin::getLandscapeLayerMapById(int nodeId) const
 {
-    if (node_id < 0)
+    if (nodeId < 0)
         return nullptr;
 
-    auto node = Node::getNode(node_id);
+    auto node = Node::getNode(nodeId);
     return checked_ptr_cast<LandscapeLayerMap>(node);
 }
 
 void TerrainSurfaceToolEditorPlugin::setupMenu()
 {
-    vamps_menu_ = WindowManager::findMenu("VampsPlugin");
-    if (!vamps_menu_)
+    pluginMenu = WindowManager::findMenu("Sogeclair");
+    if (!pluginMenu)
     {
-        if (auto* main_window = qobject_cast<QMainWindow*>(QApplication::activeWindow()))
+        if (auto* mainWindow = qobject_cast<QMainWindow*>(QApplication::activeWindow()))
         {
-            vamps_menu_ = new QMenu("VampsPlugin", main_window);
-            if (main_window->menuBar())
-                main_window->menuBar()->addMenu(vamps_menu_);
-            owns_menu_ = true;
+            pluginMenu = new QMenu("Sogeclair", mainWindow);
+            if (mainWindow->menuBar())
+                mainWindow->menuBar()->addMenu(pluginMenu);
+            ownsMenu = true;
         }
         else
         {
-            vamps_menu_ = new QMenu("VampsPlugin");
-            owns_menu_ = true;
+            pluginMenu = new QMenu("Sogeclair");
+            ownsMenu = true;
         }
     }
 
-    terrain_tool_action_ = new QAction("Terrain Surface Tool", vamps_menu_);
-    connect(terrain_tool_action_, &QAction::triggered,
+    terrainToolAction = new QAction("Terrain Surface Tool", pluginMenu);
+    connect(terrainToolAction, &QAction::triggered,
             this, &TerrainSurfaceToolEditorPlugin::openTerrainTool);
 
-    if (vamps_menu_)
-        vamps_menu_->addAction(terrain_tool_action_);
+    if (pluginMenu)
+        pluginMenu->addAction(terrainToolAction);
 }
 
 void TerrainSurfaceToolEditorPlugin::openTerrainTool()
 {
-    if (!terrain_tool_panel_)
+    if (!terrainToolPanel)
         return;
 
-    WindowManager::show(terrain_tool_panel_.get());
-    WindowManager::activate(terrain_tool_panel_.get());
+    WindowManager::show(terrainToolPanel.get());
+    WindowManager::activate(terrainToolPanel.get());
 }
 }

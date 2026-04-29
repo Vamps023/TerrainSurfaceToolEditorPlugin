@@ -5,6 +5,7 @@
 #include <UnigineFileSystem.h>
 #include <UnigineLog.h>
 
+#include <algorithm>
 #include <cmath>
 
 using namespace Unigine;
@@ -17,69 +18,76 @@ double clampPositive(double value)
     return std::max(0.0, value);
 }
 
-float safeFlatRatio(double flat_distance, double falloff_distance, double brush_size)
+float safeFlatRatio(double flatDistance, double falloffDistance, double brushSize)
 {
-    const double radius = std::max(brush_size * 0.5, flat_distance + falloff_distance);
+    const double radius = std::max(brushSize * 0.5, flatDistance + falloffDistance);
     if (radius <= Consts::EPS_D)
         return 1.0f;
-    return static_cast<float>(clamp(flat_distance / radius, 0.0, 1.0));
+    return static_cast<float>(clamp(flatDistance / radius, 0.0, 1.0));
 }
 
-float sampleSpacingForBrush(double brush_size)
+float sampleSpacingForBrush(double brushSize)
 {
-    return static_cast<float>(clamp(brush_size * 0.2, 1.0, 10.0));
+    return static_cast<float>(clamp(brushSize * 0.2, 1.0, 10.0));
 }
 
 double effectiveFlatDistance(const TerrainBrushSettings& settings)
 {
-    return clampPositive(settings.flat_distance) + (clampPositive(settings.brush_size) * 0.5);
+    return clampPositive(settings.flatDistance) + (clampPositive(settings.brushSize) * 0.5);
+}
+
+void logMessage(const TerrainManipulator::LogFn& log, const std::string& message)
+{
+    if (log)
+        log(message);
 }
 }
 
-TerrainManipulator::TerrainManipulator(LandscapeSaveManager& save_manager)
-    : save_manager_(save_manager)
+TerrainManipulator::TerrainManipulator(LandscapeSaveManager& saveManager)
+    : saveManager(saveManager)
 {
-    Landscape::getEventTextureDraw().connect(texture_draw_connection_,
-        [this](const UGUID& guid, int operation_id, const LandscapeTexturesPtr& buffer,
-               const ivec2& coord, int data_mask)
+    Landscape::getEventTextureDraw().connect(textureDrawConnection,
+        [this](const UGUID& guid, int operationId, const LandscapeTexturesPtr& buffer,
+               const ivec2& coord, int dataMask)
         {
-            onTextureDraw(guid, operation_id, buffer, coord, data_mask);
+            onTextureDraw(guid, operationId, buffer, coord, dataMask);
         });
 }
 
 TerrainManipulator::~TerrainManipulator()
 {
-    texture_draw_connection_.disconnect();
+    textureDrawConnection.disconnect();
 
-    pending_operations_.clear();
-    pending_transaction_commits_ = 0;
-    in_progress_ = false;
+    pendingOperations.clear();
+    pendingTransactionCommits = 0;
+    inProgress = false;
 }
 
 bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
                                               const ObjectLandscapeTerrainPtr& terrain,
-                                              const LandscapeLayerMapPtr& target_tile,
-                                              const std::string& surface_pattern,
+                                              const LandscapeLayerMapPtr& targetTile,
+                                              const std::string& surfacePattern,
                                               const TerrainBrushSettings& settings,
                                               const LogFn& log)
 {
     if (nodes.empty())
-        return false;
-
-    SurfaceRasterizer::SurfaceQuery query;
-    std::string query_error;
-    if (!SurfaceRasterizer::buildSurfaceQuery(surface_pattern, query, query_error))
     {
-        if (log)
-            log(query_error);
+        logMessage(log, "ERROR: No selected mesh nodes.");
         return false;
     }
 
-    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
-    if (!terrain_context.terrain)
+    SurfaceRasterizer::SurfaceQuery query;
+    std::string queryError;
+    if (!SurfaceRasterizer::buildSurfaceQuery(surfacePattern, query, queryError))
     {
-        if (log)
-            log("ERROR: No active landscape terrain.");
+        logMessage(log, "ERROR: " + queryError);
+        return false;
+    }
+
+    TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
+    if (!terrainContext.terrain)
+    {
+        logMessage(log, "ERROR: No active landscape terrain.");
         return false;
     }
 
@@ -89,10 +97,10 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
     //   1. Rasterize the mesh surface directly into a heightmap (pixels covered by mesh = target height).
     //   2. Flood-fill outward: Flat Distance = padding at full strength, Falloff Distance = smooth blend.
     // Brush Size is no longer used here (it only affected the old stamp-mode which caused ring artifacts).
-    const double flat_distance = clampPositive(settings.flat_distance);
-    const double falloff_distance = clampPositive(settings.falloff_distance);
+    const double flatDistance = clampPositive(settings.flatDistance);
+    const double falloffDistance = clampPositive(settings.falloffDistance);
 
-    bool queued_any_operation = false;
+    bool queuedAnyOperation = false;
 
     for (const auto& node : nodes)
     {
@@ -103,132 +111,73 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
         if (!mesh)
             continue;
 
-        const std::vector<int> surface_ids = SurfaceRasterizer::findMatchingSurfaceIds(mesh, query);
-        if (surface_ids.empty())
+        const std::vector<int> surfaceIds = SurfaceRasterizer::findMatchingSurfaceIds(mesh, query);
+        if (surfaceIds.empty())
             continue;
 
-        const WorldBoundBox node_bounds = mesh->getWorldBoundBox();
+        const WorldBoundBox nodeBounds = mesh->getWorldBoundBox();
 
-        for (int surface_id : surface_ids)
+        for (int surfaceId : surfaceIds)
         {
-            ObjectSurface object_surface = std::make_pair(static_ptr_cast<Object>(mesh), surface_id);
+            ObjectSurface objectSurface = std::make_pair(static_ptr_cast<Object>(mesh), surfaceId);
 
-            for (const auto& tile : terrain_context.layer_maps)
+            for (const auto& tile : terrainContext.layerMaps)
             {
-                if (!tile || !tile->getWorldBoundBox().insideValid(node_bounds))
+                if (!tile || !tile->getWorldBoundBox().insideValid(nodeBounds))
                     continue;
 
-                SurfaceRasterizer::RasterBuffer raster_buffer;
-                if (!SurfaceRasterizer::rasterizeSurfaceHeight(tile, object_surface, raster_buffer))
+                if (queueHeightRasterForTile(terrainContext,
+                                             tile,
+                                             objectSurface,
+                                             flatDistance,
+                                             falloffDistance,
+                                             settings,
+                                             log))
                 {
-                    if (log)
-                        log("  Tile '" + std::string(tile->getName()) + "': no pixels covered by mesh surface.");
-                    continue;
+                    queuedAnyOperation = true;
                 }
-
-                if (log)
-                    log("  Tile '" + std::string(tile->getName()) + "': rasterized "
-                        + std::to_string(raster_buffer.seeds.size()) + " seed pixels.");
-
-                SurfaceRasterizer::applyDistanceFalloff(tile,
-                                                        raster_buffer,
-                                                        flat_distance,
-                                                        falloff_distance);
-
-                // Blend falloff ring with existing terrain height on the CPU
-                // so the GPU brush can simply overwrite the result (the brush
-                // material cannot sample the terrain_height texture itself).
-                SurfaceRasterizer::blendFalloffWithExistingTerrain(tile,
-                                                                   terrain_context.fetch,
-                                                                   raster_buffer,
-                                                                   settings.clamp_to_original);
-
-                // Fill unpainted pixels (alpha=0) with existing terrain height so the
-                // brush writes the correct value there and doesn't produce a black ring.
-                SurfaceRasterizer::fillUnpaintedPixelsWithTerrain(tile,
-                                                                   terrain_context.fetch,
-                                                                   raster_buffer);
-
-                const ImagePtr height_image = SurfaceRasterizer::createHeightImage(raster_buffer);
-
-                // DEBUG: save height and alpha images for inspection
-                if (height_image)
-                {
-                    const std::string tile_name = std::string(tile->getName());
-                    const std::string h_path = "C:/Temp/debug_height_" + tile_name + ".png";
-                    const std::string a_path = "C:/Temp/debug_alpha_" + tile_name + ".png";
-
-                    // Normalize height image for visual inspection (save as 8-bit PNG)
-                    const ivec2 res = raster_buffer.resolution;
-                    float h_min = 1e30f, h_max = -1e30f;
-                    for (float v : raster_buffer.values) { if (v != 0.0f) { h_min = std::min(h_min, v); h_max = std::max(h_max, v); } }
-                    if (h_max <= h_min) h_max = h_min + 1.0f;
-
-                    ImagePtr vis_h = Image::create();
-                    vis_h->create2D(res.x, res.y, Image::FORMAT_R8);
-                    ImagePtr vis_a = Image::create();
-                    vis_a->create2D(res.x, res.y, Image::FORMAT_R8);
-                    for (int y = 0; y < res.y; ++y)
-                    {
-                        for (int x = 0; x < res.x; ++x)
-                        {
-                            const int i = x + y * res.x;
-                            const int h_val = static_cast<int>(clamp((raster_buffer.values[i] - h_min) / (h_max - h_min), 0.0f, 1.0f) * 255.0f);
-                            const int a_val = static_cast<int>(clamp(raster_buffer.alpha[i], 0.0f, 1.0f) * 255.0f);
-                            Image::Pixel ph(h_val, h_val, h_val, 255);
-                            Image::Pixel pa(a_val, a_val, a_val, 255);
-                            vis_h->set2D(x, y, ph);
-                            vis_a->set2D(x, y, pa);
-                        }
-                    }
-                    vis_h->save(h_path.c_str());
-                    vis_a->save(a_path.c_str());
-                    if (log) log("  DEBUG: saved " + h_path + " and " + a_path);
-                }
-
-                if (height_image && setTerrainHeight(tile, height_image))
-                    queued_any_operation = true;
             }
         }
     }
 
     finishActionScheduling();
-    if (!queued_any_operation && log)
-        log("WARNING: No terrain operations were queued.");
-    return queued_any_operation;
+    if (!queuedAnyOperation)
+        logMessage(log, "WARNING: No terrain operations were queued.");
+    return queuedAnyOperation;
 }
 
 bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
                                             const ObjectLandscapeTerrainPtr& terrain,
-                                            const LandscapeLayerMapPtr& target_tile,
-                                            const std::string& surface_pattern,
+                                            const LandscapeLayerMapPtr& targetTile,
+                                            const std::string& surfacePattern,
                                             const TerrainBrushSettings& settings,
-                                            int mask_index,
+                                            int maskIndex,
                                             const LogFn& log)
 {
     if (nodes.empty())
-        return false;
-
-    SurfaceRasterizer::SurfaceQuery query;
-    std::string query_error;
-    if (!SurfaceRasterizer::buildSurfaceQuery(surface_pattern, query, query_error))
     {
-        if (log)
-            log(query_error);
+        logMessage(log, "ERROR: No selected mesh nodes.");
         return false;
     }
 
-    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
-    if (!terrain_context.terrain)
+    SurfaceRasterizer::SurfaceQuery query;
+    std::string queryError;
+    if (!SurfaceRasterizer::buildSurfaceQuery(surfacePattern, query, queryError))
     {
-        if (log)
-            log("ERROR: No active landscape terrain.");
+        logMessage(log, "ERROR: " + queryError);
+        return false;
+    }
+
+    TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
+    if (!terrainContext.terrain)
+    {
+        logMessage(log, "ERROR: No active landscape terrain.");
         return false;
     }
 
     beginActionTransaction();
-    bool queued_any_operation = false;
-    const double mask_flat_distance = effectiveFlatDistance(settings);
+    bool queuedAnyOperation = false;
+    const double maskFlatDistance = effectiveFlatDistance(settings);
 
     for (const auto& node : nodes)
     {
@@ -239,60 +188,62 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
         if (!mesh)
             continue;
 
-        const std::vector<int> surface_ids = SurfaceRasterizer::findMatchingSurfaceIds(mesh, query);
-        if (surface_ids.empty())
+        const std::vector<int> surfaceIds = SurfaceRasterizer::findMatchingSurfaceIds(mesh, query);
+        if (surfaceIds.empty())
             continue;
 
-        const WorldBoundBox node_bounds = mesh->getWorldBoundBox();
-        for (int surface_id : surface_ids)
+        const WorldBoundBox nodeBounds = mesh->getWorldBoundBox();
+        for (int surfaceId : surfaceIds)
         {
-            ObjectSurface object_surface = std::make_pair(static_ptr_cast<Object>(mesh), surface_id);
-            SurfaceRasterizer::RasterBuffer raster_buffer;
+            ObjectSurface objectSurface = std::make_pair(static_ptr_cast<Object>(mesh), surfaceId);
+            SurfaceRasterizer::RasterBuffer rasterBuffer;
 
-            for (const auto& tile : terrain_context.layer_maps)
+            for (const auto& tile : terrainContext.layerMaps)
             {
-                if (!tile || !tile->getWorldBoundBox().insideValid(node_bounds))
+                if (!tile || !tile->getWorldBoundBox().insideValid(nodeBounds))
                     continue;
 
-                if (!SurfaceRasterizer::rasterizeSurfaceMask(tile, object_surface, raster_buffer))
+                if (!SurfaceRasterizer::rasterizeSurfaceMask(tile, objectSurface, rasterBuffer))
                     continue;
 
                 SurfaceRasterizer::applyDistanceFalloff(tile,
-                                                        raster_buffer,
-                                                        mask_flat_distance,
-                                                        settings.falloff_distance);
+                                                        rasterBuffer,
+                                                        maskFlatDistance,
+                                                        settings.falloffDistance);
 
-                const ImagePtr mask_image = SurfaceRasterizer::createMaskImage(raster_buffer);
-                if (mask_image && setTerrainMask(tile, mask_image, settings, mask_index))
-                    queued_any_operation = true;
+                const ImagePtr maskImage = SurfaceRasterizer::createMaskImage(rasterBuffer);
+                if (maskImage && setTerrainMask(tile, maskImage, settings, maskIndex))
+                    queuedAnyOperation = true;
             }
         }
     }
 
     finishActionScheduling();
-    if (!queued_any_operation && log)
-        log("WARNING: No landscape mask operations were queued.");
-    return queued_any_operation;
+    if (!queuedAnyOperation)
+        logMessage(log, "WARNING: No landscape mask operations were queued.");
+    return queuedAnyOperation;
 }
 
 bool TerrainManipulator::resetTerrainHeights(const std::vector<NodePtr>& nodes,
                                              const ObjectLandscapeTerrainPtr& terrain,
-                                             const LandscapeLayerMapPtr& target_tile,
+                                             const LandscapeLayerMapPtr& targetTile,
                                              const LogFn& log)
 {
     if (nodes.empty())
-        return false;
-
-    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
-    if (!terrain_context.terrain)
     {
-        if (log)
-            log("ERROR: No active landscape terrain.");
+        logMessage(log, "ERROR: No selected mesh nodes.");
+        return false;
+    }
+
+    TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
+    if (!terrainContext.terrain)
+    {
+        logMessage(log, "ERROR: No active landscape terrain.");
         return false;
     }
 
     beginActionTransaction();
-    bool queued_any_operation = false;
+    bool queuedAnyOperation = false;
 
     for (const auto& node : nodes)
     {
@@ -303,14 +254,14 @@ bool TerrainManipulator::resetTerrainHeights(const std::vector<NodePtr>& nodes,
         if (!mesh)
             continue;
 
-        for (const auto& tile : terrain_context.layer_maps)
+        for (const auto& tile : terrainContext.layerMaps)
         {
             if (!tile || !tile->getWorldBoundBox().insideValid(mesh->getWorldBoundBox()))
                 continue;
 
-            const ivec2 tile_resolution = tile->getResolution();
-            ImagePtr height_image = Image::create();
-            height_image->create2D(tile_resolution.x, tile_resolution.y, Image::FORMAT_RGBA32F);
+            const ivec2 tileResolution = tile->getResolution();
+            ImagePtr heightImage = Image::create();
+            heightImage->create2D(tileResolution.x, tileResolution.y, Image::FORMAT_RGBA32F);
 
             Image::Pixel pixel;
             pixel.f.r = 0.0f;
@@ -318,42 +269,44 @@ bool TerrainManipulator::resetTerrainHeights(const std::vector<NodePtr>& nodes,
             pixel.f.b = 0.0f;
             pixel.f.a = 1.0f;
 
-            for (int x = 0; x < tile_resolution.x; ++x)
+            for (int x = 0; x < tileResolution.x; ++x)
             {
-                for (int y = 0; y < tile_resolution.y; ++y)
-                    height_image->set2D(x, y, pixel);
+                for (int y = 0; y < tileResolution.y; ++y)
+                    heightImage->set2D(x, y, pixel);
             }
 
-            if (setTerrainHeight(tile, height_image))
-                queued_any_operation = true;
+            if (setTerrainHeight(tile, heightImage))
+                queuedAnyOperation = true;
         }
     }
 
     finishActionScheduling();
-    if (!queued_any_operation && log)
-        log("WARNING: No terrain tiles intersected the selected meshes.");
-    return queued_any_operation;
+    if (!queuedAnyOperation)
+        logMessage(log, "WARNING: No terrain tiles intersected the selected meshes.");
+    return queuedAnyOperation;
 }
 
 bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
                                           const ObjectLandscapeTerrainPtr& terrain,
-                                          const LandscapeLayerMapPtr& target_tile,
+                                          const LandscapeLayerMapPtr& targetTile,
                                           const TerrainBrushSettings& settings,
                                           const LogFn& log)
 {
     if (nodes.empty())
-        return false;
-
-    TerrainContext terrain_context = buildTerrainContext(terrain, target_tile);
-    if (!terrain_context.terrain)
     {
-        if (log)
-            log("ERROR: No active landscape terrain.");
+        logMessage(log, "ERROR: No selected mesh nodes.");
+        return false;
+    }
+
+    TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
+    if (!terrainContext.terrain)
+    {
+        logMessage(log, "ERROR: No active landscape terrain.");
         return false;
     }
 
     beginActionTransaction();
-    bool queued_any_operation = false;
+    bool queuedAnyOperation = false;
 
     for (const auto& node : nodes)
     {
@@ -365,93 +318,92 @@ bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
             continue;
 
         // Use the mesh's top Z in world space as the uniform erase height
-        const WorldBoundBox mesh_bounds = mesh->getWorldBoundBox();
-        const float paint_height = static_cast<float>(mesh_bounds.maximum.z);
+        const WorldBoundBox meshBounds = mesh->getWorldBoundBox();
+        const float paintHeight = static_cast<float>(meshBounds.maximum.z);
 
-        if (log)
-            log("  Erasing entire tile to height = " + std::to_string(paint_height) + " m (mesh top).");
+        logMessage(log, "  Erasing entire tile to height = " + std::to_string(paintHeight) + " m (mesh top).");
 
-        for (const auto& tile : terrain_context.layer_maps)
+        for (const auto& tile : terrainContext.layerMaps)
         {
-            if (!tile || !tile->getWorldBoundBox().insideValid(mesh_bounds))
+            if (!tile || !tile->getWorldBoundBox().insideValid(meshBounds))
                 continue;
 
-            const ivec2 tile_resolution = tile->getResolution();
-            ImagePtr height_image = Image::create();
-            height_image->create2D(tile_resolution.x, tile_resolution.y, Image::FORMAT_RGBA32F);
+            const ivec2 tileResolution = tile->getResolution();
+            ImagePtr heightImage = Image::create();
+            heightImage->create2D(tileResolution.x, tileResolution.y, Image::FORMAT_RGBA32F);
 
             Image::Pixel pixel;
-            pixel.f.r = paint_height;
-            pixel.f.g = paint_height;
-            pixel.f.b = paint_height;
-            pixel.f.a = 1.0f;  // full opacity — overwrite entire tile
+            pixel.f.r = paintHeight;
+            pixel.f.g = paintHeight;
+            pixel.f.b = paintHeight;
+            pixel.f.a = 1.0f;  // Full opacity: overwrite entire tile.
 
-            for (int x = 0; x < tile_resolution.x; ++x)
+            for (int x = 0; x < tileResolution.x; ++x)
             {
-                for (int y = 0; y < tile_resolution.y; ++y)
-                    height_image->set2D(x, y, pixel);
+                for (int y = 0; y < tileResolution.y; ++y)
+                    heightImage->set2D(x, y, pixel);
             }
 
-            if (setTerrainHeight(tile, height_image))
-                queued_any_operation = true;
+            if (setTerrainHeight(tile, heightImage))
+                queuedAnyOperation = true;
         }
     }
 
     finishActionScheduling();
-    if (!queued_any_operation && log)
-        log("WARNING: No terrain tiles intersected the selected meshes.");
-    return queued_any_operation;
+    if (!queuedAnyOperation)
+        logMessage(log, "WARNING: No terrain tiles intersected the selected meshes.");
+    return queuedAnyOperation;
 }
 
 bool TerrainManipulator::isBusy() const
 {
-    return in_progress_ || !pending_operations_.empty();
+    return inProgress || !pendingOperations.empty();
 }
 
 size_t TerrainManipulator::pendingOperationCount() const
 {
-    return pending_operations_.size();
+    return pendingOperations.size();
 }
 
 void TerrainManipulator::flushPendingSaves()
 {
-    save_manager_.forceFlush();
+    saveManager.forceFlush();
 }
 
 bool TerrainManipulator::beginActionTransaction()
 {
-    save_manager_.beginTransaction();
+    saveManager.beginTransaction();
     return true;
 }
 
 void TerrainManipulator::finishActionScheduling()
 {
-    if (pending_operations_.empty())
+    if (pendingOperations.empty())
     {
-        save_manager_.endTransaction();
+        saveManager.endTransaction();
         return;
     }
 
-    ++pending_transaction_commits_;
-    in_progress_ = true;
+    ++pendingTransactionCommits;
+    inProgress = true;
 }
 
-void TerrainManipulator::finalizeActionTransactionsIfIdle()
+void TerrainManipulator::EndTransactionsIfIdle()
 {
-    if (!pending_operations_.empty())
+    if (!pendingOperations.empty())
         return;
 
-    while (pending_transaction_commits_ > 0)
+    while (pendingTransactionCommits > 0)
     {
-        save_manager_.endTransaction();
-        --pending_transaction_commits_;
+        saveManager.endTransaction();
+        --pendingTransactionCommits;
     }
 
-    in_progress_ = false;
+    inProgress = false;
 }
 
 TerrainManipulator::TerrainContext TerrainManipulator::buildTerrainContext(const ObjectLandscapeTerrainPtr& terrain,
-                                                                          const LandscapeLayerMapPtr& target_tile)
+                                                                          const LandscapeLayerMapPtr& targetTile)
 {
     TerrainContext context;
     context.terrain = terrain ? terrain : Landscape::getActiveTerrain();
@@ -461,21 +413,109 @@ TerrainManipulator::TerrainContext TerrainManipulator::buildTerrainContext(const
     if (!context.terrain)
         return context;
 
-    if (target_tile)
+    if (targetTile)
     {
-        context.layer_maps.push_back(target_tile);
+        context.layerMaps.push_back(targetTile);
         return context;
     }
 
-    context.layer_maps.reserve(context.terrain->getNumChildren());
-    for (int child_index = 0; child_index < context.terrain->getNumChildren(); ++child_index)
+    context.layerMaps.reserve(context.terrain->getNumChildren());
+    for (int childIndex = 0; childIndex < context.terrain->getNumChildren(); ++childIndex)
     {
-        auto tile = checked_ptr_cast<LandscapeLayerMap>(context.terrain->getChild(child_index));
+        LandscapeLayerMapPtr tile = checked_ptr_cast<LandscapeLayerMap>(context.terrain->getChild(childIndex));
         if (tile)
-            context.layer_maps.push_back(tile);
+            context.layerMaps.push_back(tile);
     }
 
     return context;
+}
+
+bool TerrainManipulator::queueHeightRasterForTile(const TerrainContext& terrainContext,
+                                                  const LandscapeLayerMapPtr& tile,
+                                                  const ObjectSurface& objectSurface,
+                                                  double flatDistance,
+                                                  double falloffDistance,
+                                                  const TerrainBrushSettings& settings,
+                                                  const LogFn& log)
+{
+    SurfaceRasterizer::RasterBuffer rasterBuffer;
+    if (!SurfaceRasterizer::rasterizeSurfaceHeight(tile, objectSurface, rasterBuffer))
+    {
+        logMessage(log, "  Tile '" + std::string(tile->getName()) + "': no pixels covered by mesh surface.");
+        return false;
+    }
+
+    logMessage(log, "  Tile '" + std::string(tile->getName()) + "': rasterized "
+                    + std::to_string(rasterBuffer.seeds.size()) + " seed pixels.");
+
+    SurfaceRasterizer::applyDistanceFalloff(tile,
+                                            rasterBuffer,
+                                            flatDistance,
+                                            falloffDistance);
+
+    // Blend on the CPU because the overwrite brush cannot sample terrain_height itself.
+    SurfaceRasterizer::blendFalloffWithExistingTerrain(tile,
+                                                       terrainContext.fetch,
+                                                       rasterBuffer,
+                                                       settings.clampToOriginal);
+    SurfaceRasterizer::fillUnpaintedPixelsWithTerrain(tile,
+                                                       terrainContext.fetch,
+                                                       rasterBuffer);
+
+    const ImagePtr heightImage = SurfaceRasterizer::createHeightImage(rasterBuffer);
+    if (!heightImage)
+        return false;
+
+    saveDebugRasterImages(tile, rasterBuffer, log);
+    return setTerrainHeight(tile, heightImage);
+}
+
+void TerrainManipulator::saveDebugRasterImages(const LandscapeLayerMapPtr& tile,
+                                               const SurfaceRasterizer::RasterBuffer& rasterBuffer,
+                                               const LogFn& log)
+{
+    if (!kSaveDebugRasterImages || !tile)
+        return;
+
+    const std::string tileName = std::string(tile->getName());
+    const std::string heightPath = std::string(kDebugRasterOutputDir) + "/debug_height_" + tileName + ".png";
+    const std::string alphaPath = std::string(kDebugRasterOutputDir) + "/debug_alpha_" + tileName + ".png";
+    const ivec2 resolution = rasterBuffer.resolution;
+
+    float minHeight = 1e30f;
+    float maxHeight = -1e30f;
+    for (float value : rasterBuffer.values)
+    {
+        if (value == 0.0f)
+            continue;
+
+        minHeight = std::min(minHeight, value);
+        maxHeight = std::max(maxHeight, value);
+    }
+    if (maxHeight <= minHeight)
+        maxHeight = minHeight + 1.0f;
+
+    ImagePtr heightPreview = Image::create();
+    heightPreview->create2D(resolution.x, resolution.y, Image::FORMAT_R8);
+    ImagePtr alphaPreview = Image::create();
+    alphaPreview->create2D(resolution.x, resolution.y, Image::FORMAT_R8);
+
+    for (int y = 0; y < resolution.y; ++y)
+    {
+        for (int x = 0; x < resolution.x; ++x)
+        {
+            const int index = x + (y * resolution.x);
+            const int heightValue = static_cast<int>(
+                clamp((rasterBuffer.values[index] - minHeight) / (maxHeight - minHeight), 0.0f, 1.0f) * 255.0f);
+            const int alphaValue = static_cast<int>(clamp(rasterBuffer.alpha[index], 0.0f, 1.0f) * 255.0f);
+            heightPreview->set2D(x, y, Image::Pixel(heightValue, heightValue, heightValue, 255));
+            alphaPreview->set2D(x, y, Image::Pixel(alphaValue, alphaValue, alphaValue, 255));
+        }
+    }
+
+    heightPreview->save(heightPath.c_str());
+    alphaPreview->save(alphaPath.c_str());
+    logMessage(log, "  DEBUG: saved " + heightPath + " and " + alphaPath);
 }
 
 bool TerrainManipulator::terrainAvailable(TerrainContext& context, const dvec2& position)
@@ -488,388 +528,405 @@ bool TerrainManipulator::terrainAvailable(TerrainContext& context, const dvec2& 
 LandscapeLayerMapPtr TerrainManipulator::findContainingLayerMap(const TerrainContext& context,
                                                                 const dvec3& position)
 {
-    LandscapeLayerMapPtr best_match = nullptr;
-    for (const auto& tile : context.layer_maps)
+    LandscapeLayerMapPtr bestMatch = nullptr;
+    for (const auto& tile : context.layerMaps)
     {
         if (!tile || !tile->getWorldBoundBox().inside(position))
             continue;
-        if (!best_match || tile->getOrder() > best_match->getOrder())
-            best_match = tile;
+        if (!bestMatch || tile->getOrder() > bestMatch->getOrder())
+            bestMatch = tile;
     }
-    return best_match;
+    return bestMatch;
 }
 
 void TerrainManipulator::raiseTerrainAtPoint(const TerrainContext& context,
                                              const dvec3& point,
-                                             const dvec2& brush_size,
-                                             const MaterialPtr& brush_material,
-                                             float brush_rotation,
-                                             bool target_albedo,
-                                             LandscapeLayerMapPtr forced_tile)
+                                             const dvec2& brushSize,
+                                             const MaterialPtr& brushMaterial,
+                                             float brushRotation,
+                                             bool targetAlbedo,
+                                             LandscapeLayerMapPtr forcedTile)
 {
-    TerrainContext mutable_context = context;
-    if (!terrainAvailable(mutable_context, dvec2(point.x, point.y)))
+    TerrainContext mutableContext = context;
+    if (!terrainAvailable(mutableContext, dvec2(point.x, point.y)))
         return;
 
-    LandscapeLayerMapPtr tile = forced_tile ? forced_tile : findContainingLayerMap(context, point);
+    LandscapeLayerMapPtr tile = forcedTile ? forcedTile : findContainingLayerMap(context, point);
     if (!tile)
         return;
 
-    const dvec3 brush_local_position = tile->getIWorldTransform() * point;
-    const quat brush_world_rotation = quat(vec3_up, brush_rotation);
-    const quat brush_local_rotation = brush_world_rotation * inverse(tile->getWorldRotation());
-    const dvec2 half_size = brush_size * 0.5;
+    const dvec3 brushLocalPosition = tile->getIWorldTransform() * point;
+    const quat brushWorldRotation = quat(vec3_up, brushRotation);
+    const quat brushLocalRotation = brushWorldRotation * inverse(tile->getWorldRotation());
+    const dvec2 halfSize = brushSize * 0.5;
 
-    ivec2 drawing_coord;
-    ivec2 drawing_size;
-    calculateDrawingRegion(brush_local_position, brush_local_rotation, half_size, tile, drawing_coord, drawing_size);
+    ivec2 drawingCoord;
+    ivec2 drawingSize;
+    calculateDrawingRegion(brushLocalPosition, brushLocalRotation, halfSize, tile, drawingCoord, drawingSize);
 
-    drawing_coord.x = clamp(drawing_coord.x, 0, tile->getResolution().x - 1);
-    drawing_coord.y = clamp(drawing_coord.y, 0, tile->getResolution().y - 1);
-    drawing_size.x = clamp(drawing_size.x, 1, tile->getResolution().x - drawing_coord.x);
-    drawing_size.y = clamp(drawing_size.y, 1, tile->getResolution().y - drawing_coord.y);
+    drawingCoord.x = clamp(drawingCoord.x, 0, tile->getResolution().x - 1);
+    drawingCoord.y = clamp(drawingCoord.y, 0, tile->getResolution().y - 1);
+    drawingSize.x = clamp(drawingSize.x, 1, tile->getResolution().x - drawingCoord.x);
+    drawingSize.y = clamp(drawingSize.y, 1, tile->getResolution().y - drawingCoord.y);
 
     BrushOperationData operation;
-    operation.brush_material = brush_material;
-    operation.brush_height = static_cast<float>(point.z);
-    operation.brush_size = static_cast<float>(std::max(drawing_size.x, drawing_size.y));
-    operation.brush_rotation = brush_rotation;
-    operation.modify_heights = !target_albedo;
-    operation.modify_albedo = target_albedo;
+    operation.brushMaterial = brushMaterial;
+    operation.brushHeight = static_cast<float>(point.z);
+    operation.brushSize = static_cast<float>(std::max(drawingSize.x, drawingSize.y));
+    operation.brushRotation = brushRotation;
+    operation.modifyHeights = !targetAlbedo;
+    operation.modifyAlbedo = targetAlbedo;
 
-    const int flags = target_albedo
+    const int flags = targetAlbedo
         ? Landscape::FLAGS_FILE_DATA_ALBEDO
         : (Landscape::FLAGS_FILE_DATA_HEIGHT | Landscape::FLAGS_FILE_DATA_OPACITY_HEIGHT);
 
-    const int operation_id = Landscape::generateOperationID();
-    pending_operations_[operation_id] = operation;
-    Landscape::asyncTextureDraw(operation_id, tile->getGUID(), drawing_coord, drawing_size, flags);
+    const int operationId = Landscape::generateOperationID();
+    pendingOperations[operationId] = operation;
+    Landscape::asyncTextureDraw(operationId, tile->getGUID(), drawingCoord, drawingSize, flags);
 
-    if (forced_tile)
+    if (forcedTile)
         return;
 
-    const int max_x = tile->getResolution().x - drawing_size.x;
-    const int max_y = tile->getResolution().y - drawing_size.y;
-    if ((drawing_coord.x > 0 && drawing_coord.x < max_x) &&
-        (drawing_coord.y > 0 && drawing_coord.y < max_y))
+    const int maxX = tile->getResolution().x - drawingSize.x;
+    const int maxY = tile->getResolution().y - drawingSize.y;
+    if ((drawingCoord.x > 0 && drawingCoord.x < maxX) &&
+        (drawingCoord.y > 0 && drawingCoord.y < maxY))
     {
         return;
     }
 
-    dvec3 boundary_probe = point;
-    const dvec3 tile_position = tile->getWorldPosition();
-    boundary_probe.x = (drawing_coord.x <= 0)
-        ? tile_position.x + drawing_coord.x
-        : tile_position.x + drawing_coord.x + drawing_size.x;
-    boundary_probe.y = (drawing_coord.y <= 0)
-        ? tile_position.y + drawing_coord.y
-        : tile_position.y + drawing_coord.y + drawing_size.y;
+    dvec3 boundaryProbe = point;
+    const dvec3 tilePosition = tile->getWorldPosition();
+    boundaryProbe.x = (drawingCoord.x <= 0)
+        ? tilePosition.x + drawingCoord.x
+        : tilePosition.x + drawingCoord.x + drawingSize.x;
+    boundaryProbe.y = (drawingCoord.y <= 0)
+        ? tilePosition.y + drawingCoord.y
+        : tilePosition.y + drawingCoord.y + drawingSize.y;
 
-    LandscapeLayerMapPtr neighbor_tile = findContainingLayerMap(context, boundary_probe);
-    if (!neighbor_tile || neighbor_tile == tile)
+    LandscapeLayerMapPtr neighborTile = findContainingLayerMap(context, boundaryProbe);
+    if (!neighborTile || neighborTile == tile)
         return;
 
-    raiseTerrainAtPoint(context, point, brush_size, brush_material, brush_rotation, target_albedo, neighbor_tile);
+    raiseTerrainAtPoint(context, point, brushSize, brushMaterial, brushRotation, targetAlbedo, neighborTile);
 }
 
-void TerrainManipulator::calculateDrawingRegion(const dvec3& brush_local_position,
-                                                const quat& brush_local_rotation,
-                                                const dvec2& half_size,
+void TerrainManipulator::calculateDrawingRegion(const dvec3& brushLocalPosition,
+                                                const quat& brushLocalRotation,
+                                                const dvec2& halfSize,
                                                 const LandscapeLayerMapPtr& tile,
-                                                ivec2& out_coord,
-                                                ivec2& out_size)
+                                                ivec2& outCoord,
+                                                ivec2& outSize)
 {
     const Vec3 corners[4] = {
-        brush_local_position + brush_local_rotation * Vec3(-half_size.x, -half_size.y, 0.0),
-        brush_local_position + brush_local_rotation * Vec3( half_size.x, -half_size.y, 0.0),
-        brush_local_position + brush_local_rotation * Vec3(-half_size.x,  half_size.y, 0.0),
-        brush_local_position + brush_local_rotation * Vec3( half_size.x,  half_size.y, 0.0),
+        brushLocalPosition + brushLocalRotation * Vec3(-halfSize.x, -halfSize.y, 0.0),
+        brushLocalPosition + brushLocalRotation * Vec3( halfSize.x, -halfSize.y, 0.0),
+        brushLocalPosition + brushLocalRotation * Vec3(-halfSize.x,  halfSize.y, 0.0),
+        brushLocalPosition + brushLocalRotation * Vec3( halfSize.x,  halfSize.y, 0.0),
     };
 
-    const Vec2 bbox_min(
+    const Vec2 bboxMin(
         std::min(std::min(corners[0].x, corners[1].x), std::min(corners[2].x, corners[3].x)),
         std::min(std::min(corners[0].y, corners[1].y), std::min(corners[2].y, corners[3].y)));
-    const Vec2 bbox_max(
+    const Vec2 bboxMax(
         std::max(std::max(corners[0].x, corners[1].x), std::max(corners[2].x, corners[3].x)),
         std::max(std::max(corners[0].y, corners[1].y), std::max(corners[2].y, corners[3].y)));
 
-    const Vec2 pixels_per_unit = Vec2(tile->getResolution()) / Vec2(tile->getSize());
-    out_coord = ivec2(round(pixels_per_unit * bbox_min));
-    out_size = ivec2(pixels_per_unit * round(bbox_max - bbox_min));
+    const Vec2 pixelsPerUnit = Vec2(tile->getResolution()) / Vec2(tile->getSize());
+    outCoord = ivec2(round(pixelsPerUnit * bboxMin));
+    outSize = ivec2(pixelsPerUnit * round(bboxMax - bboxMin));
 }
 
-bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile, const ImagePtr& height_image)
+bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile, const ImagePtr& heightImage)
 {
-    if (!tile || !height_image)
+    if (!tile || !heightImage)
         return false;
 
-    ImagePtr prepared_image = height_image;
-    if (prepared_image->getFormat() != Image::FORMAT_RGBA32F)
+    ImagePtr preparedImage = heightImage;
+    if (preparedImage->getFormat() != Image::FORMAT_RGBA32F)
     {
-        if (!prepared_image->convertToFormat(Image::FORMAT_RGBA32F))
+        if (!preparedImage->convertToFormat(Image::FORMAT_RGBA32F))
             return false;
     }
 
-    const ivec2 tile_resolution = tile->getResolution();
-    if (prepared_image->getWidth() != tile_resolution.x || prepared_image->getHeight() != tile_resolution.y)
+    const ivec2 tileResolution = tile->getResolution();
+    if (preparedImage->getWidth() != tileResolution.x || preparedImage->getHeight() != tileResolution.y)
     {
-        if (!prepared_image->resize(tile_resolution.x, tile_resolution.y))
+        if (!preparedImage->resize(tileResolution.x, tileResolution.y))
             return false;
     }
 
-    const ImagePtr alpha_image = SurfaceRasterizer::createHeightAlphaImage(prepared_image);
-    if (!alpha_image)
+    const ImagePtr alphaImage = SurfaceRasterizer::createHeightAlphaImage(preparedImage);
+    if (!alphaImage)
         return false;
 
     BrushOperationData operation;
-    operation.height_image = prepared_image;
-    operation.alpha_image = alpha_image;
-    operation.modify_heights = true;
+    operation.heightImage = preparedImage;
+    operation.alphaImage = alphaImage;
+    operation.modifyHeights = true;
 
-    const int operation_id = Landscape::generateOperationID();
-    pending_operations_[operation_id] = operation;
-    Landscape::asyncTextureDraw(operation_id,
+    const int operationId = Landscape::generateOperationID();
+    pendingOperations[operationId] = operation;
+    Landscape::asyncTextureDraw(operationId,
                                 tile->getGUID(),
                                 ivec2_zero,
-                                tile_resolution,
+                                tileResolution,
                                 Landscape::FLAGS_FILE_DATA_HEIGHT | Landscape::FLAGS_FILE_DATA_OPACITY_HEIGHT);
     return true;
 }
 
 bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
-                                        const ImagePtr& mask_image,
+                                        const ImagePtr& maskImage,
                                         const TerrainBrushSettings& settings,
-                                        int mask_index)
+                                        int maskIndex)
 {
-    if (!tile || !mask_image)
+    if (!tile || !maskImage)
         return false;
 
-    ImagePtr prepared_image = mask_image;
-    if (prepared_image->getFormat() != Image::FORMAT_R8)
+    ImagePtr preparedImage = maskImage;
+    if (preparedImage->getFormat() != Image::FORMAT_R8)
     {
-        if (!prepared_image->convertToFormat(Image::FORMAT_R8))
+        if (!preparedImage->convertToFormat(Image::FORMAT_R8))
             return false;
     }
 
-    const ivec2 tile_resolution = tile->getResolution();
-    if (prepared_image->getWidth() != tile_resolution.x || prepared_image->getHeight() != tile_resolution.y)
+    const ivec2 tileResolution = tile->getResolution();
+    if (preparedImage->getWidth() != tileResolution.x || preparedImage->getHeight() != tileResolution.y)
     {
-        if (!prepared_image->resize(tile_resolution.x, tile_resolution.y))
+        if (!preparedImage->resize(tileResolution.x, tileResolution.y))
             return false;
     }
 
-    const MaterialPtr brush_material = createMaskBrush(prepared_image);
-    if (!brush_material)
+    const MaterialPtr brushMaterial = createMaskBrush(preparedImage);
+    if (!brushMaterial)
         return false;
 
     BrushOperationData operation;
-    operation.brush_material = brush_material;
-    operation.brush_size = static_cast<float>(std::max(1.0, settings.brush_size));
-    operation.modify_mask = true;
-    operation.mask_index = mask_index;
+    operation.brushMaterial = brushMaterial;
+    operation.brushSize = static_cast<float>(std::max(1.0, settings.brushSize));
+    operation.modifyMask = true;
+    operation.maskIndex = maskIndex;
 
-    const int mask_flags = getMaskFileDataFlags(mask_index);
-    if (mask_flags == 0)
+    const int maskFlags = getMaskFileDataFlags(maskIndex);
+    if (maskFlags == 0)
         return false;
 
-    const int operation_id = Landscape::generateOperationID();
-    pending_operations_[operation_id] = operation;
-    Landscape::asyncTextureDraw(operation_id, tile->getGUID(), ivec2_zero, tile_resolution, mask_flags);
+    const int operationId = Landscape::generateOperationID();
+    pendingOperations[operationId] = operation;
+    Landscape::asyncTextureDraw(operationId, tile->getGUID(), ivec2_zero, tileResolution, maskFlags);
     return true;
 }
 
 bool TerrainManipulator::applyHeightOverwrite(const LandscapeTexturesPtr& buffer,
-                                              const TexturePtr& height_texture,
-                                              const TexturePtr& alpha_texture)
+                                              const TexturePtr& heightTexture,
+                                              const TexturePtr& alphaTexture)
 {
-    if (!buffer || !height_texture || !alpha_texture)
+    if (!buffer || !heightTexture || !alphaTexture)
         return false;
 
-    const MaterialPtr brush_material = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
+    const MaterialPtr brushMaterial = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
                                                              "terrain height overwrite");
-    if (!brush_material)
+    if (!brushMaterial)
         return false;
 
-    brush_material->setTexture("terrain_height", buffer->getHeight());
-    brush_material->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
-    brush_material->setTexture("new_height", height_texture);
-    brush_material->setTexture("new_alpha", alpha_texture);
-    brush_material->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-    brush_material->setTexture("terrain_height", nullptr);
-    brush_material->setTexture("terrain_opacity_height", nullptr);
-    brush_material->setTexture("new_height", nullptr);
-    brush_material->setTexture("new_alpha", nullptr);
+    brushMaterial->setTexture("terrain_height", buffer->getHeight());
+    brushMaterial->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
+    brushMaterial->setTexture("new_height", heightTexture);
+    brushMaterial->setTexture("new_alpha", alphaTexture);
+    brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+    clearBrushMaterialTextures(brushMaterial);
+    brushMaterial->setTexture("new_height", nullptr);
+    brushMaterial->setTexture("new_alpha", nullptr);
     return true;
 }
 
 bool TerrainManipulator::applyAlbedoOverwrite(const LandscapeTexturesPtr& buffer,
-                                              const ImagePtr& albedo_image)
+                                              const ImagePtr& albedoImage)
 {
-    if (!buffer || !albedo_image)
+    if (!buffer || !albedoImage)
         return false;
 
-    const MaterialPtr brush_material = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
+    const MaterialPtr brushMaterial = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
                                                              "terrain albedo overwrite");
-    if (!brush_material)
+    if (!brushMaterial)
         return false;
 
-    TexturePtr albedo_texture = Texture::create();
-    if (!albedo_texture || !albedo_texture->create(albedo_image))
+    TexturePtr albedoTexture = Texture::create();
+    if (!albedoTexture || !albedoTexture->create(albedoImage))
         return false;
 
-    brush_material->setTexture("terrain_height", buffer->getAlbedo());
-    brush_material->setTexture("new_height", albedo_texture);
-    brush_material->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-    brush_material->setTexture("terrain_height", nullptr);
-    brush_material->setTexture("new_height", nullptr);
+    brushMaterial->setTexture("terrain_height", buffer->getAlbedo());
+    brushMaterial->setTexture("new_height", albedoTexture);
+    brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+    clearBrushMaterialTextures(brushMaterial);
+    brushMaterial->setTexture("new_height", nullptr);
     return true;
 }
 
 bool TerrainManipulator::applyBrush(const BrushOperationData& operation,
                                     const LandscapeTexturesPtr& buffer,
-                                    int data_mask)
+                                    int dataMask)
 {
-    if (!buffer || !operation.brush_material)
+    if (!buffer || !operation.brushMaterial)
         return false;
 
-    MaterialPtr brush_material = operation.brush_material;
-    brush_material->setParameterFloat("size", operation.brush_size);
-    brush_material->setParameterFloat("angle", operation.brush_rotation);
-    brush_material->setParameterFloat("opacity", operation.brush_opacity);
+    MaterialPtr brushMaterial = operation.brushMaterial;
+    brushMaterial->setParameterFloat("size", operation.brushSize);
+    brushMaterial->setParameterFloat("angle", operation.brushRotation);
+    brushMaterial->setParameterFloat("opacity", operation.brushOpacity);
 
-    if (operation.modify_mask)
+    if (operation.modifyMask)
+        return applyMaskBrush(operation, buffer);
+
+    if (operation.modifyHeights)
     {
-        int available_pages = 0;
-        for (int page_index = 0; page_index < 5; ++page_index)
-        {
-            if (buffer->getMask(page_index) && buffer->getOpacityMask(page_index))
-                ++available_pages;
-        }
-        if (available_pages == 0)
-            return false;
-
-        for (int page_index = 0; page_index < 5; ++page_index)
-        {
-            const std::string mask_name = "terrain_mask_" + std::to_string(page_index);
-            const std::string opacity_name = "terrain_opacity_mask_" + std::to_string(page_index);
-            brush_material->setTexture(mask_name.c_str(), buffer->getMask(page_index));
-            brush_material->setTexture(opacity_name.c_str(), buffer->getOpacityMask(page_index));
-        }
-
-        const int logical_mask_bit = 1 << (operation.mask_index + 2);
-        brush_material->setParameterInt("data_mask", logical_mask_bit);
-        brush_material->setState("data_mask", logical_mask_bit);
-        brush_material->setParameterInt("data_mask_opacity", logical_mask_bit);
-        brush_material->setState("data_mask_opacity", logical_mask_bit);
-        brush_material->setState("masks_overide", 0);
-        brush_material->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-
-        for (int page_index = 0; page_index < 5; ++page_index)
-        {
-            const std::string mask_name = "terrain_mask_" + std::to_string(page_index);
-            const std::string opacity_name = "terrain_opacity_mask_" + std::to_string(page_index);
-            brush_material->setTexture(mask_name.c_str(), nullptr);
-            brush_material->setTexture(opacity_name.c_str(), nullptr);
-        }
-
-        return true;
+        brushMaterial->setTexture("terrain_height", buffer->getHeight());
+        brushMaterial->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
+        brushMaterial->setParameterFloat("height", operation.brushHeight);
     }
 
-    if (operation.modify_heights)
-    {
-        brush_material->setTexture("terrain_height", buffer->getHeight());
-        brush_material->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
-        brush_material->setParameterFloat("height", operation.brush_height);
-    }
+    if (operation.modifyAlbedo)
+        brushMaterial->setTexture("terrain_albedo", buffer->getAlbedo());
 
-    if (operation.modify_albedo)
-        brush_material->setTexture("terrain_albedo", buffer->getAlbedo());
-
-    brush_material->setParameterInt("data_mask", data_mask);
-    brush_material->setState("height_blend_mode", static_cast<int>(operation.height_blend_mode));
-    brush_material->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-    brush_material->setTexture("terrain_height", nullptr);
-    brush_material->setTexture("terrain_opacity_height", nullptr);
-    brush_material->setTexture("terrain_albedo", nullptr);
+    brushMaterial->setParameterInt("data_mask", dataMask);
+    brushMaterial->setState("height_blend_mode", static_cast<int>(operation.heightBlendMode));
+    brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+    clearBrushMaterialTextures(brushMaterial);
     return true;
 }
 
-void TerrainManipulator::onTextureDraw(const UGUID& guid, int operation_id,
+bool TerrainManipulator::applyMaskBrush(const BrushOperationData& operation,
+                                        const LandscapeTexturesPtr& buffer)
+{
+    if (!buffer || !operation.brushMaterial)
+        return false;
+
+    MaterialPtr brushMaterial = operation.brushMaterial;
+    int availablePages = 0;
+    for (int pageIndex = 0; pageIndex < kLandscapeMaskPageCount; ++pageIndex)
+    {
+        if (buffer->getMask(pageIndex) && buffer->getOpacityMask(pageIndex))
+            ++availablePages;
+    }
+    if (availablePages == 0)
+        return false;
+
+    for (int pageIndex = 0; pageIndex < kLandscapeMaskPageCount; ++pageIndex)
+    {
+        const std::string maskName = "terrain_mask_" + std::to_string(pageIndex);
+        const std::string opacityName = "terrain_opacity_mask_" + std::to_string(pageIndex);
+        brushMaterial->setTexture(maskName.c_str(), buffer->getMask(pageIndex));
+        brushMaterial->setTexture(opacityName.c_str(), buffer->getOpacityMask(pageIndex));
+    }
+
+    // Unigine reserves the first two data-mask bits for height data; landscape masks start after them.
+    const int logicalMaskBit = 1 << (operation.maskIndex + kMaskDataBitOffset);
+    brushMaterial->setParameterInt("data_mask", logicalMaskBit);
+    brushMaterial->setState("data_mask", logicalMaskBit);
+    brushMaterial->setParameterInt("data_mask_opacity", logicalMaskBit);
+    brushMaterial->setState("data_mask_opacity", logicalMaskBit);
+    brushMaterial->setState("masks_overide", 0);
+    brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+
+    for (int pageIndex = 0; pageIndex < kLandscapeMaskPageCount; ++pageIndex)
+    {
+        const std::string maskName = "terrain_mask_" + std::to_string(pageIndex);
+        const std::string opacityName = "terrain_opacity_mask_" + std::to_string(pageIndex);
+        brushMaterial->setTexture(maskName.c_str(), nullptr);
+        brushMaterial->setTexture(opacityName.c_str(), nullptr);
+    }
+
+    return true;
+}
+
+void TerrainManipulator::onTextureDraw(const UGUID& guid, int operationId,
                                        const LandscapeTexturesPtr& buffer,
                                        const ivec2& coord,
-                                       int data_mask)
+                                       int dataMask)
 {
     UNIGINE_UNUSED(coord);
 
-    auto operation_it = pending_operations_.find(operation_id);
-    if (operation_it == pending_operations_.end())
+    auto operationIt = pendingOperations.find(operationId);
+    if (operationIt == pendingOperations.end())
         return;
 
-    const BrushOperationData operation = operation_it->second;
-    pending_operations_.erase(operation_it);
+    const BrushOperationData operation = operationIt->second;
+    pendingOperations.erase(operationIt);
 
     bool applied = false;
-    if (operation.height_image && operation.alpha_image)
+    if (operation.heightImage && operation.alphaImage)
     {
-        TexturePtr height_texture = Texture::create();
-        TexturePtr alpha_texture = Texture::create();
-        if (height_texture && alpha_texture &&
-            height_texture->create(operation.height_image) &&
-            alpha_texture->create(operation.alpha_image))
+        TexturePtr heightTexture = Texture::create();
+        TexturePtr alphaTexture = Texture::create();
+        if (heightTexture && alphaTexture &&
+            heightTexture->create(operation.heightImage) &&
+            alphaTexture->create(operation.alphaImage))
         {
-            applied = applyHeightOverwrite(buffer, height_texture, alpha_texture);
+            applied = applyHeightOverwrite(buffer, heightTexture, alphaTexture);
         }
     }
-    else if (operation.albedo_image)
+    else if (operation.albedoImage)
     {
-        applied = applyAlbedoOverwrite(buffer, operation.albedo_image);
+        applied = applyAlbedoOverwrite(buffer, operation.albedoImage);
     }
     else
     {
-        applied = applyBrush(operation, buffer, data_mask);
+        applied = applyBrush(operation, buffer, dataMask);
     }
 
     if (applied)
-        save_manager_.markDirty(guid);
+        saveManager.markDirty(guid);
 
-    finalizeActionTransactionsIfIdle();
+    EndTransactionsIfIdle();
 }
 
-MaterialPtr TerrainManipulator::loadInheritedMaterial(const char* material_path, const char* log_context)
+MaterialPtr TerrainManipulator::loadInheritedMaterial(const char* materialPath, const char* logContext)
 {
-    const auto file_guid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(material_path));
-    if (!file_guid.isValid())
+    const auto fileGuid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(materialPath));
+    if (!fileGuid.isValid())
     {
-        Log::warning("[TerrainManipulator] Missing %s material '%s'\n", log_context, material_path);
+        Log::error("[TerrainManipulator] Missing %s material '%s'\n", logContext, materialPath);
         return nullptr;
     }
 
-    const auto base_material = Materials::findMaterialByFileGUID(file_guid);
-    if (!base_material)
+    const auto baseMaterial = Materials::findMaterialByFileGUID(fileGuid);
+    if (!baseMaterial)
     {
-        Log::warning("[TerrainManipulator] Failed to load %s material '%s'\n", log_context, material_path);
+        Log::error("[TerrainManipulator] Failed to load %s material '%s'\n", logContext, materialPath);
         return nullptr;
     }
 
-    return base_material->inherit();
+    return baseMaterial->inherit();
 }
 
-MaterialPtr TerrainManipulator::createCircularBrush(double falloff_ratio, double padding)
+void TerrainManipulator::clearBrushMaterialTextures(const MaterialPtr& brushMaterial)
 {
-    MaterialPtr brush_material = loadInheritedMaterial("circle_medium.brush", "terrain brush");
-    if (!brush_material)
+    if (!brushMaterial)
+        return;
+
+    brushMaterial->setTexture("terrain_height", nullptr);
+    brushMaterial->setTexture("terrain_opacity_height", nullptr);
+    brushMaterial->setTexture("terrain_albedo", nullptr);
+}
+
+MaterialPtr TerrainManipulator::createCircularBrush(double falloffRatio, double padding)
+{
+    MaterialPtr brushMaterial = loadInheritedMaterial("circle_medium.brush", "terrain brush");
+    if (!brushMaterial)
         return nullptr;
 
-    const auto opacity_texture_index = brush_material->findTexture("opacity");
-    if (opacity_texture_index < 0)
+    const auto opacityTextureIndex = brushMaterial->findTexture("opacity");
+    if (opacityTextureIndex < 0)
         return nullptr;
 
+    // 512 matches the editor brush opacity texture size and keeps falloff edges smooth.
     constexpr int kBrushResolution = 512;
-    ImagePtr opacity_image = Image::create();
-    opacity_image->create2D(kBrushResolution, kBrushResolution, Image::FORMAT_RGBA8);
+    ImagePtr opacityImage = Image::create();
+    opacityImage->create2D(kBrushResolution, kBrushResolution, Image::FORMAT_RGBA8);
 
-    const int center_x = kBrushResolution / 2;
-    const int center_y = kBrushResolution / 2;
+    const int centerX = kBrushResolution / 2;
+    const int centerY = kBrushResolution / 2;
     const float radius = (kBrushResolution - static_cast<float>(padding) * kBrushResolution) * 0.5f;
 
     Image::Pixel pixel;
@@ -882,66 +939,66 @@ MaterialPtr TerrainManipulator::createCircularBrush(double falloff_ratio, double
     {
         for (int x = 0; x < kBrushResolution; ++x)
         {
-            const float distance_value = std::sqrt(static_cast<float>(((x - center_x) * (x - center_x)) +
-                                                                      ((y - center_y) * (y - center_y))));
-            if (distance_value > radius)
+            const float distanceValue = std::sqrt(static_cast<float>(((x - centerX) * (x - centerX)) +
+                                                                      ((y - centerY) * (y - centerY))));
+            if (distanceValue > radius)
             {
                 pixel.i.a = 0;
             }
             else
             {
-                const float normalized = clamp(distance_value / std::max(radius, 1.0f), 0.0f, 1.0f);
-                if (normalized <= falloff_ratio)
+                const float normalized = clamp(distanceValue / std::max(radius, 1.0f), 0.0f, 1.0f);
+                if (normalized <= falloffRatio)
                 {
                     pixel.i.a = 255;
                 }
                 else
                 {
-                    const float falloff_span = std::max(1.0f - static_cast<float>(falloff_ratio), 1e-4f);
-                    const float fade = 1.0f - ((normalized - falloff_ratio) / falloff_span);
+                    const float falloffSpan = std::max(1.0f - static_cast<float>(falloffRatio), 1e-4f);
+                    const float fade = 1.0f - ((normalized - falloffRatio) / falloffSpan);
                     pixel.i.a = clamp(static_cast<int>(fade * 255.0f), 0, 255);
                 }
             }
 
-            opacity_image->set2D(x, y, pixel);
+            opacityImage->set2D(x, y, pixel);
         }
     }
 
-    brush_material->setTextureImage(opacity_texture_index, opacity_image);
-    return brush_material;
+    brushMaterial->setTextureImage(opacityTextureIndex, opacityImage);
+    return brushMaterial;
 }
 
-MaterialPtr TerrainManipulator::createMaskBrush(const ImagePtr& mask_image)
+MaterialPtr TerrainManipulator::createMaskBrush(const ImagePtr& maskImage)
 {
-    if (!mask_image)
+    if (!maskImage)
         return nullptr;
 
-    MaterialPtr brush_material = loadInheritedMaterial("editor2/brushes/brush.basebrush", "mask brush");
-    if (!brush_material)
+    MaterialPtr brushMaterial = loadInheritedMaterial("editor2/brushes/brush.basebrush", "mask brush");
+    if (!brushMaterial)
         return nullptr;
 
-    const auto opacity_texture_index = brush_material->findTexture("opacity");
-    if (opacity_texture_index < 0)
+    const auto opacityTextureIndex = brushMaterial->findTexture("opacity");
+    if (opacityTextureIndex < 0)
         return nullptr;
 
-    brush_material->setTextureImage(opacity_texture_index, mask_image);
-    brush_material->setParameterFloat4("color", vec4(1.0f, 1.0f, 1.0f, 1.0f));
-    brush_material->setParameterFloat("color_intensity", 1.0f);
-    brush_material->setParameterFloat("contrast", 0.0f);
-    brush_material->setState("masks_overide", 0);
-    return brush_material;
+    brushMaterial->setTextureImage(opacityTextureIndex, maskImage);
+    brushMaterial->setParameterFloat4("color", vec4(1.0f, 1.0f, 1.0f, 1.0f));
+    brushMaterial->setParameterFloat("color_intensity", 1.0f);
+    brushMaterial->setParameterFloat("contrast", 0.0f);
+    brushMaterial->setState("masks_overide", 0);
+    return brushMaterial;
 }
 
-int TerrainManipulator::getMaskFileDataFlags(int mask_index)
+int TerrainManipulator::getMaskFileDataFlags(int maskIndex)
 {
-    if (mask_index < 0 || mask_index > 19)
+    if (maskIndex < 0 || maskIndex > kMaxLandscapeMaskIndex)
         return 0;
 
     int flags = 0;
-    for (int page_index = 0; page_index < 5; ++page_index)
+    for (int pageIndex = 0; pageIndex < kLandscapeMaskPageCount; ++pageIndex)
     {
-        flags |= (Landscape::FLAGS_FILE_DATA_MASK_0 << page_index);
-        flags |= (Landscape::FLAGS_FILE_DATA_OPACITY_MASK_0 << page_index);
+        flags |= (Landscape::FLAGS_FILE_DATA_MASK_0 << pageIndex);
+        flags |= (Landscape::FLAGS_FILE_DATA_OPACITY_MASK_0 << pageIndex);
     }
     return flags;
 }

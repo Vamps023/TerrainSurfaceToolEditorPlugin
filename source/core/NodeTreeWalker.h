@@ -11,21 +11,21 @@ namespace NodeTreeWalker
 
 template<int TargetNodeType, typename CastType>
 inline void collectNodesRecursive(const Unigine::NodePtr& node,
-                                  std::vector<Unigine::Ptr<CastType>>& out_nodes,
-                                  std::unordered_set<int>& visited_ids)
+                                  std::vector<Unigine::Ptr<CastType>>& outNodes,
+                                  std::unordered_set<int>& visitedIds)
 {
     if (!node)
         return;
 
-    const int node_id = node->getID();
-    if (!visited_ids.insert(node_id).second)
+    const int nodeId = node->getID();
+    if (!visitedIds.insert(nodeId).second)
         return;
 
     if (node->getType() == TargetNodeType)
     {
         auto cast = Unigine::checked_ptr_cast<CastType>(node);
         if (cast)
-            out_nodes.push_back(cast);
+            outNodes.push_back(cast);
     }
     else if (node->getType() == Unigine::Node::NODE_REFERENCE)
     {
@@ -34,31 +34,31 @@ inline void collectNodesRecursive(const Unigine::NodePtr& node,
         {
             auto target = reference->getReference();
             if (target)
-                collectNodesRecursive<TargetNodeType, CastType>(target, out_nodes, visited_ids);
+                collectNodesRecursive<TargetNodeType, CastType>(target, outNodes, visitedIds);
         }
     }
 
     for (int i = 0; i < node->getNumChildren(); ++i)
-        collectNodesRecursive<TargetNodeType, CastType>(node->getChild(i), out_nodes, visited_ids);
+        collectNodesRecursive<TargetNodeType, CastType>(node->getChild(i), outNodes, visitedIds);
 }
 
 inline void collectMeshNodesRecursive(const Unigine::NodePtr& node,
-                                      std::vector<Unigine::NodePtr>& out_nodes,
-                                      std::unordered_set<int>& visited_ids,
-                                      std::unordered_set<int>& collected_mesh_ids)
+                                      std::vector<Unigine::NodePtr>& outNodes,
+                                      std::unordered_set<int>& visitedIds,
+                                      std::unordered_set<int>& collectedMeshIds)
 {
     if (!node)
         return;
 
-    const int node_id = node->getID();
-    if (!visited_ids.insert(node_id).second)
+    const int nodeId = node->getID();
+    if (!visitedIds.insert(nodeId).second)
         return;
 
     const int type = node->getType();
     if (type == Unigine::Node::OBJECT_MESH_STATIC || type == Unigine::Node::OBJECT_MESH_DYNAMIC)
     {
-        if (collected_mesh_ids.insert(node_id).second)
-            out_nodes.push_back(node);
+        if (collectedMeshIds.insert(nodeId).second)
+            outNodes.push_back(node);
     }
     else if (type == Unigine::Node::NODE_REFERENCE)
     {
@@ -67,12 +67,12 @@ inline void collectMeshNodesRecursive(const Unigine::NodePtr& node,
         {
             auto target = reference->getReference();
             if (target)
-                collectMeshNodesRecursive(target, out_nodes, visited_ids, collected_mesh_ids);
+                collectMeshNodesRecursive(target, outNodes, visitedIds, collectedMeshIds);
         }
     }
 
     for (int i = 0; i < node->getNumChildren(); ++i)
-        collectMeshNodesRecursive(node->getChild(i), out_nodes, visited_ids, collected_mesh_ids);
+        collectMeshNodesRecursive(node->getChild(i), outNodes, visitedIds, collectedMeshIds);
 }
 
 }

@@ -20,32 +20,32 @@ class TerrainManipulator
 public:
     using LogFn = std::function<void(const std::string&)>;
 
-    explicit TerrainManipulator(LandscapeSaveManager& save_manager);
+    explicit TerrainManipulator(LandscapeSaveManager& saveManager);
     ~TerrainManipulator();
 
     bool pullTerrainToSurface(const std::vector<Unigine::NodePtr>& nodes,
                               const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                              const Unigine::LandscapeLayerMapPtr& target_tile,
-                              const std::string& surface_pattern,
+                              const Unigine::LandscapeLayerMapPtr& targetTile,
+                              const std::string& surfacePattern,
                               const TerrainBrushSettings& settings,
                               const LogFn& log);
 
     bool applyLandscapeMask(const std::vector<Unigine::NodePtr>& nodes,
                             const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                            const Unigine::LandscapeLayerMapPtr& target_tile,
-                            const std::string& surface_pattern,
+                            const Unigine::LandscapeLayerMapPtr& targetTile,
+                            const std::string& surfacePattern,
                             const TerrainBrushSettings& settings,
-                            int mask_index,
+                            int maskIndex,
                             const LogFn& log);
 
     bool resetTerrainHeights(const std::vector<Unigine::NodePtr>& nodes,
                              const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                             const Unigine::LandscapeLayerMapPtr& target_tile,
+                             const Unigine::LandscapeLayerMapPtr& targetTile,
                              const LogFn& log);
 
     bool paintWhiteHeight(const std::vector<Unigine::NodePtr>& nodes,
                           const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                          const Unigine::LandscapeLayerMapPtr& target_tile,
+                          const Unigine::LandscapeLayerMapPtr& targetTile,
                           const TerrainBrushSettings& settings,
                           const LogFn& log);
 
@@ -63,82 +63,100 @@ private:
     struct TerrainContext
     {
         Unigine::ObjectLandscapeTerrainPtr terrain;
-        std::vector<Unigine::LandscapeLayerMapPtr> layer_maps;
+        std::vector<Unigine::LandscapeLayerMapPtr> layerMaps;
         Unigine::LandscapeFetchPtr fetch;
     };
 
     struct BrushOperationData
     {
-        Unigine::MaterialPtr brush_material;
-        Unigine::ImagePtr albedo_image;
-        Unigine::ImagePtr height_image;
-        Unigine::ImagePtr alpha_image;
-        float brush_height = 0.0f;
-        float brush_size = 1.0f;
-        float brush_rotation = 0.0f;
-        float brush_opacity = 1.0f;
-        HeightBlendMode height_blend_mode = HeightBlendMode::Alpha;
-        bool modify_heights = false;
-        bool modify_albedo = false;
-        bool modify_mask = false;
-        int mask_index = 0;
+        Unigine::MaterialPtr brushMaterial;
+        Unigine::ImagePtr albedoImage;
+        Unigine::ImagePtr heightImage;
+        Unigine::ImagePtr alphaImage;
+        float brushHeight = 0.0f;
+        float brushSize = 1.0f;
+        float brushRotation = 0.0f;
+        float brushOpacity = 1.0f;
+        HeightBlendMode heightBlendMode = HeightBlendMode::Alpha;
+        bool modifyHeights = false;
+        bool modifyAlbedo = false;
+        bool modifyMask = false;
+        int maskIndex = 0;
     };
 
     static constexpr bool kDebugHotPathLogs = false;
+    static constexpr bool kSaveDebugRasterImages = false;
+    static constexpr const char* kDebugRasterOutputDir = "C:/Temp";
+    static constexpr int kLandscapeMaskPageCount = 5;
+    static constexpr int kMaxLandscapeMaskIndex = 19;
+    static constexpr int kMaskDataBitOffset = 2;
 
     bool beginActionTransaction();
     void finishActionScheduling();
-    void finalizeActionTransactionsIfIdle();
+    void EndTransactionsIfIdle();
 
     static TerrainContext buildTerrainContext(const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                                             const Unigine::LandscapeLayerMapPtr& target_tile);
+                                             const Unigine::LandscapeLayerMapPtr& targetTile);
     static bool terrainAvailable(TerrainContext& context, const Unigine::Math::dvec2& position);
     static Unigine::LandscapeLayerMapPtr findContainingLayerMap(const TerrainContext& context,
                                                                 const Unigine::Math::dvec3& position);
 
     void raiseTerrainAtPoint(const TerrainContext& context,
                              const Unigine::Math::dvec3& point,
-                             const Unigine::Math::dvec2& brush_size,
-                             const Unigine::MaterialPtr& brush_material,
-                             float brush_rotation,
-                             bool target_albedo = false,
-                             Unigine::LandscapeLayerMapPtr forced_tile = nullptr);
+                             const Unigine::Math::dvec2& brushSize,
+                             const Unigine::MaterialPtr& brushMaterial,
+                             float brushRotation,
+                             bool targetAlbedo = false,
+                             Unigine::LandscapeLayerMapPtr forcedTile = nullptr);
 
-    static void calculateDrawingRegion(const Unigine::Math::dvec3& brush_local_position,
-                                       const Unigine::Math::quat& brush_local_rotation,
-                                       const Unigine::Math::dvec2& half_size,
+    static void calculateDrawingRegion(const Unigine::Math::dvec3& brushLocalPosition,
+                                       const Unigine::Math::quat& brushLocalRotation,
+                                       const Unigine::Math::dvec2& halfSize,
                                        const Unigine::LandscapeLayerMapPtr& tile,
-                                       Unigine::Math::ivec2& out_coord,
-                                       Unigine::Math::ivec2& out_size);
+                                       Unigine::Math::ivec2& outCoord,
+                                       Unigine::Math::ivec2& outSize);
 
-    bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile, const Unigine::ImagePtr& height_image);
+    bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile, const Unigine::ImagePtr& heightImage);
     bool setTerrainMask(const Unigine::LandscapeLayerMapPtr& tile,
-                        const Unigine::ImagePtr& mask_image,
+                        const Unigine::ImagePtr& maskImage,
                         const TerrainBrushSettings& settings,
-                        int mask_index);
+                        int maskIndex);
     bool applyHeightOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
-                              const Unigine::TexturePtr& height_texture,
-                              const Unigine::TexturePtr& alpha_texture);
+                              const Unigine::TexturePtr& heightTexture,
+                              const Unigine::TexturePtr& alphaTexture);
     bool applyAlbedoOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
-                              const Unigine::ImagePtr& albedo_image);
+                              const Unigine::ImagePtr& albedoImage);
     bool applyBrush(const BrushOperationData& operation,
                     const Unigine::LandscapeTexturesPtr& buffer,
-                    int data_mask);
+                    int dataMask);
+    bool applyMaskBrush(const BrushOperationData& operation,
+                        const Unigine::LandscapeTexturesPtr& buffer);
+    bool queueHeightRasterForTile(const TerrainContext& terrainContext,
+                                  const Unigine::LandscapeLayerMapPtr& tile,
+                                  const ObjectSurface& objectSurface,
+                                  double flatDistance,
+                                  double falloffDistance,
+                                  const TerrainBrushSettings& settings,
+                                  const LogFn& log);
+    static void saveDebugRasterImages(const Unigine::LandscapeLayerMapPtr& tile,
+                                      const SurfaceRasterizer::RasterBuffer& rasterBuffer,
+                                      const LogFn& log);
 
-    void onTextureDraw(const Unigine::UGUID& guid, int operation_id,
+    void onTextureDraw(const Unigine::UGUID& guid, int operationId,
                        const Unigine::LandscapeTexturesPtr& buffer,
                        const Unigine::Math::ivec2& coord,
-                       int data_mask);
+                       int dataMask);
 
-    static Unigine::MaterialPtr loadInheritedMaterial(const char* material_path, const char* log_context);
-    static Unigine::MaterialPtr createCircularBrush(double falloff_ratio, double padding = 0.0);
-    static Unigine::MaterialPtr createMaskBrush(const Unigine::ImagePtr& mask_image);
-    static int getMaskFileDataFlags(int mask_index);
+    static Unigine::MaterialPtr loadInheritedMaterial(const char* materialPath, const char* logContext);
+    static void clearBrushMaterialTextures(const Unigine::MaterialPtr& brushMaterial);
+    static Unigine::MaterialPtr createCircularBrush(double falloffRatio, double padding = 0.0);
+    static Unigine::MaterialPtr createMaskBrush(const Unigine::ImagePtr& maskImage);
+    static int getMaskFileDataFlags(int maskIndex);
 
-    LandscapeSaveManager& save_manager_;
-    std::unordered_map<int, BrushOperationData> pending_operations_;
+    LandscapeSaveManager& saveManager;
+    std::unordered_map<int, BrushOperationData> pendingOperations;
 
-    Unigine::EventConnection texture_draw_connection_;
-    int pending_transaction_commits_ = 0;
-    bool in_progress_ = false;
+    Unigine::EventConnection textureDrawConnection;
+    int pendingTransactionCommits = 0;
+    bool inProgress = false;
 };

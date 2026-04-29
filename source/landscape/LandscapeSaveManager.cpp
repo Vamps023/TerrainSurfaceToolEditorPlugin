@@ -4,16 +4,16 @@
 
 using namespace Unigine;
 
-LandscapeSaveManager::LandscapeSaveManager(bool debug_logging)
-    : debug_logging_(debug_logging)
+LandscapeSaveManager::LandscapeSaveManager(bool debugLogging)
+    : debugLogging(debugLogging)
 {
-    Landscape::getEventSaveFile().connect(save_file_connection_,
-        [this](const UGUID& guid, int operation_id, const char* path_new_diff, const char* path_old_diff)
+    Landscape::getEventSaveFile().connect(saveFileConnection,
+        [this](const UGUID& guid, int operationId, const char* pathNewDiff, const char* pathOldDiff)
         {
-            onSaveFile(guid, operation_id, path_new_diff, path_old_diff);
+            onSaveFile(guid, operationId, pathNewDiff, pathOldDiff);
         });
 
-    World::getEventPreWorldSave().connect(pre_world_save_connection_,
+    World::getEventPreWorldSave().connect(preWorldSaveConnection,
         [this](const char*)
         {
             forceFlush();
@@ -22,33 +22,33 @@ LandscapeSaveManager::LandscapeSaveManager(bool debug_logging)
 
 LandscapeSaveManager::~LandscapeSaveManager()
 {
-    save_file_connection_.disconnect();
-    pre_world_save_connection_.disconnect();
+    saveFileConnection.disconnect();
+    preWorldSaveConnection.disconnect();
 
-    pending_save_requests_.clear();
-    inflight_saves_.clear();
-    dirty_versions_.clear();
-    dirty_guids_.clear();
-    transaction_depth_ = 0;
+    pendingSaveRequests.clear();
+    inflightSaves.clear();
+    dirtyVersions.clear();
+    dirtyGuids.clear();
+    transactionDepth = 0;
 }
 
 void LandscapeSaveManager::beginTransaction()
 {
-    ++transaction_depth_;
-    logDebug("[LandscapeSaveManager] Begin transaction depth=%d\n", transaction_depth_);
+    ++transactionDepth;
+    logDebug("[LandscapeSaveManager] Begin transaction depth=%d\n", transactionDepth);
 }
 
 void LandscapeSaveManager::endTransaction()
 {
-    if (transaction_depth_ <= 0)
+    if (transactionDepth <= 0)
     {
-        transaction_depth_ = 0;
+        transactionDepth = 0;
         return;
     }
 
-    --transaction_depth_;
-    logDebug("[LandscapeSaveManager] End transaction depth=%d\n", transaction_depth_);
-    if (transaction_depth_ == 0)
+    --transactionDepth;
+    logDebug("[LandscapeSaveManager] End transaction depth=%d\n", transactionDepth);
+    if (transactionDepth == 0)
         flushPending();
 }
 
@@ -61,78 +61,78 @@ void LandscapeSaveManager::markDirty(const UGUID& guid)
     if (key.empty())
         return;
 
-    dirty_guids_[key] = guid;
-    dirty_versions_[key] = ++version_counter_;
+    dirtyGuids[key] = guid;
+    dirtyVersions[key] = ++versionCounter;
     logDebug("[LandscapeSaveManager] Mark dirty %s version=%llu\n",
              key.c_str(),
-             static_cast<unsigned long long>(dirty_versions_[key]));
+             static_cast<unsigned long long>(dirtyVersions[key]));
 }
 
 void LandscapeSaveManager::flushPending()
 {
-    if (transaction_depth_ > 0)
+    if (transactionDepth > 0)
         return;
 
-    for (const auto& [key, guid] : dirty_guids_)
+    for (const auto& [key, guid] : dirtyGuids)
     {
         if (!guid.isValid())
             continue;
-        if (inflight_saves_.count(key) != 0)
+        if (inflightSaves.count(key) != 0)
             continue;
 
-        const auto version_it = dirty_versions_.find(key);
-        const std::uint64_t version = version_it != dirty_versions_.end() ? version_it->second : 0;
+        const auto versionIt = dirtyVersions.find(key);
+        const std::uint64_t version = versionIt != dirtyVersions.end() ? versionIt->second : 0;
         queueSave(key, guid, version);
     }
 }
 
 void LandscapeSaveManager::forceFlush()
 {
-    transaction_depth_ = 0;
+    transactionDepth = 0;
     flushPending();
 }
 
 std::string LandscapeSaveManager::guidKey(const UGUID& guid)
 {
-    return guid.isValid() ? std::string(guid.makeString().get()) : std::string();
+    return guid.isValid() ? std::string(guid.getString()) : std::string();
 }
 
 void LandscapeSaveManager::queueSave(const std::string& key, const UGUID& guid, std::uint64_t version)
 {
-    if (!guid.isValid() || key.empty() || inflight_saves_.count(key) != 0)
+    if (!guid.isValid() || key.empty() || inflightSaves.count(key) != 0)
         return;
 
-    const int operation_id = Landscape::generateOperationID();
-    pending_save_requests_[operation_id] = PendingSaveRequest{key, version};
-    inflight_saves_.insert(key);
+    const int operationId = Landscape::generateOperationID();
+    pendingSaveRequests[operationId] = PendingSaveRequest{key, version};
+    inflightSaves.insert(key);
 
-    Landscape::asyncSaveFile(operation_id, guid);
+    Landscape::asyncSaveFile(operationId, guid);
     logDebug("[LandscapeSaveManager] Queued save %s version=%llu op=%d\n",
              key.c_str(),
              static_cast<unsigned long long>(version),
-             operation_id);
+             operationId);
 }
 
-void LandscapeSaveManager::onSaveFile(const UGUID& guid, int operation_id,
-                                      const char* path_new_diff, const char* path_old_diff)
+void LandscapeSaveManager::onSaveFile(const UGUID& guid, int operationId,
+                                      const char* pathNewDiff, const char* pathOldDiff)
 {
     UNIGINE_UNUSED(guid);
-    UNIGINE_UNUSED(path_new_diff);
-    UNIGINE_UNUSED(path_old_diff);
+    UNIGINE_UNUSED(pathNewDiff);
+    UNIGINE_UNUSED(pathOldDiff);
 
-    const auto request_it = pending_save_requests_.find(operation_id);
-    if (request_it == pending_save_requests_.end())
+    const auto requestIt = pendingSaveRequests.find(operationId);
+    if (requestIt == pendingSaveRequests.end())
         return;
 
-    const PendingSaveRequest request = request_it->second;
-    pending_save_requests_.erase(request_it);
-    inflight_saves_.erase(request.key);
+    const PendingSaveRequest request = requestIt->second;
+    pendingSaveRequests.erase(requestIt);
+    inflightSaves.erase(request.key);
 
-    const auto version_it = dirty_versions_.find(request.key);
-    if (version_it == dirty_versions_.end() || version_it->second <= request.version)
+    const auto versionIt = dirtyVersions.find(request.key);
+    if (versionIt == dirtyVersions.end() || versionIt->second <= request.version)
     {
-        dirty_versions_.erase(request.key);
-        dirty_guids_.erase(request.key);
+        dirtyVersions.erase(request.key);
+        dirtyGuids.erase(request.key);
         logDebug("[LandscapeSaveManager] Save completed %s version=%llu\n",
                  request.key.c_str(),
                  static_cast<unsigned long long>(request.version));
@@ -142,19 +142,19 @@ void LandscapeSaveManager::onSaveFile(const UGUID& guid, int operation_id,
     logDebug("[LandscapeSaveManager] Save completed for stale version %s saved=%llu current=%llu\n",
              request.key.c_str(),
              static_cast<unsigned long long>(request.version),
-             static_cast<unsigned long long>(version_it->second));
+             static_cast<unsigned long long>(versionIt->second));
 
-    if (transaction_depth_ == 0)
+    if (transactionDepth == 0)
     {
-        const auto guid_it = dirty_guids_.find(request.key);
-        if (guid_it != dirty_guids_.end())
-            queueSave(request.key, guid_it->second, version_it->second);
+        const auto guidIt = dirtyGuids.find(request.key);
+        if (guidIt != dirtyGuids.end())
+            queueSave(request.key, guidIt->second, versionIt->second);
     }
 }
 
 void LandscapeSaveManager::logDebug(const char* format, ...) const
 {
-    if (!debug_logging_)
+    if (!debugLogging)
         return;
 
     char buffer[1024];
