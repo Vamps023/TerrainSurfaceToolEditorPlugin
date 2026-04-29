@@ -12,6 +12,14 @@
 using namespace Unigine;
 using namespace Unigine::Math;
 
+namespace
+{
+// Only surfaces whose world-space normal has a meaningful upward component should
+// drive terrain/mask rasterization. This prevents road/plane side walls from
+// pulling terrain up beside the selected top surface.
+constexpr double kMinTerrainSurfaceNormalZ = 0.25;
+}
+
 void SurfaceRasterizer::RasterBuffer::reset(const ivec2& resolutionValue)
 {
     resolution = resolutionValue;
@@ -770,6 +778,18 @@ bool SurfaceRasterizer::pointInTriangle(const Vec3& point,
     return (outU >= 0.0 && outV >= 0.0 && (outU + outV) <= 1.0);
 }
 
+bool SurfaceRasterizer::isUpFacingTriangle(const dvec3& v1, const dvec3& v2, const dvec3& v3)
+{
+    const dvec3 edge1 = v2 - v1;
+    const dvec3 edge2 = v3 - v1;
+    const dvec3 normal = cross(edge1, edge2);
+    const double length = normal.length();
+    if (length <= Consts::EPS_D)
+        return false;
+
+    return std::abs(normal.z / length) >= kMinTerrainSurfaceNormalZ;
+}
+
 bool SurfaceRasterizer::appendSurfaceTrianglesWorldSpace(const ObjectSurface& objectSurface,
                                                          Vector<dvec3>& outVertices)
 {
@@ -797,12 +817,25 @@ bool SurfaceRasterizer::appendSurfaceTrianglesWorldSpace(const ObjectSurface& ob
     const int surfaceVertexCount = mesh->getNumVertices(surfaceIndex);
 
     outVertices.reserve(indices.size());
-    for (int index : indices)
+    for (int indexOffset = 0; indexOffset + 2 < indices.size(); indexOffset += 3)
     {
-        if (index < 0 || index >= surfaceVertexCount)
+        const int index1 = indices[indexOffset];
+        const int index2 = indices[indexOffset + 1];
+        const int index3 = indices[indexOffset + 2];
+        if (index1 < 0 || index1 >= surfaceVertexCount ||
+            index2 < 0 || index2 >= surfaceVertexCount ||
+            index3 < 0 || index3 >= surfaceVertexCount)
             continue;
 
-        outVertices.push_back(worldTransform * dvec3(mesh->getVertex(index, surfaceIndex)));
+        const dvec3 vertex1 = worldTransform * dvec3(mesh->getVertex(index1, surfaceIndex));
+        const dvec3 vertex2 = worldTransform * dvec3(mesh->getVertex(index2, surfaceIndex));
+        const dvec3 vertex3 = worldTransform * dvec3(mesh->getVertex(index3, surfaceIndex));
+        if (!isUpFacingTriangle(vertex1, vertex2, vertex3))
+            continue;
+
+        outVertices.push_back(vertex1);
+        outVertices.push_back(vertex2);
+        outVertices.push_back(vertex3);
     }
 
     return !outVertices.empty();

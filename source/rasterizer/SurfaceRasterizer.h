@@ -105,6 +105,9 @@ private:
                                 const Unigine::Math::Vec3& v3,
                                 double& outU,
                                 double& outV);
+    static bool isUpFacingTriangle(const Unigine::Math::dvec3& v1,
+                                   const Unigine::Math::dvec3& v2,
+                                   const Unigine::Math::dvec3& v3);
     static bool appendSurfaceTrianglesWorldSpace(const ObjectSurface& objectSurface,
                                                  Unigine::Vector<Unigine::Math::dvec3>& outVertices);
 };
