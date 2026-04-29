@@ -14,10 +14,15 @@ using namespace Unigine::Math;
 
 namespace
 {
-// Only surfaces whose world-space normal has a meaningful upward component should
-// drive terrain/mask rasterization. This prevents road/plane side walls from
-// pulling terrain up beside the selected top surface.
-constexpr double kMinTerrainSurfaceNormalZ = 0.25;
+// Only surfaces whose world-space normal points mostly upward should drive
+// terrain/mask rasterization. This excludes vertical side walls and underside
+// triangles so pull/falloff stays under the intended top surface footprint.
+constexpr double kMinTerrainSurfaceNormalZ = 0.7;
+
+// The raster seed is restricted to top-facing mesh triangles. Falloff is then
+// allowed to expand outward from that top footprint so it can create terrain
+// slopes instead of only painting a hard flat shape.
+constexpr bool kRestrictFalloffToMeshFootprint = false;
 }
 
 void SurfaceRasterizer::RasterBuffer::reset(const ivec2& resolutionValue)
@@ -327,6 +332,12 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
     const int width = resolution.x;
     const int height = resolution.y;
     const int pixelCount = width * height;
+    std::vector<unsigned char> sourceCoverage(pixelCount, 0);
+    for (int i = 0; i < pixelCount; ++i)
+    {
+        if (buffer.sourceIndex[i] >= 0 && buffer.alpha[i] > 0.0f)
+            sourceCoverage[i] = 1;
+    }
 
     std::vector<int> dist(pixelCount, kInfDistance);
     std::vector<int> nearestSeed(pixelCount, -1);
@@ -418,6 +429,18 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
         {
             const float t = (pixelDist - flatPixels) / falloffPixels;
             buffer.alpha[i] = smoothstep(1.0f - t);
+        }
+    }
+
+    if (kRestrictFalloffToMeshFootprint)
+    {
+        for (int i = 0; i < pixelCount; ++i)
+        {
+            if (sourceCoverage[i])
+                continue;
+
+            buffer.alpha[i] = 0.0f;
+            buffer.sourceIndex[i] = -1;
         }
     }
 }
@@ -664,18 +687,14 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer)
     ImagePtr image = Image::create();
     image->create2D(buffer.resolution.x, buffer.resolution.y, Image::FORMAT_R8);
 
-    // The landscape mask texture is sampled with Y inverted compared to the
-    // height texture, so we flip Y when writing pixels to keep the mask
-    // aligned with the mesh footprint in world space.
     for (int y = 0; y < buffer.resolution.y; ++y)
     {
-        const int dstY = toImageY(y, buffer.resolution.y);
         for (int x = 0; x < buffer.resolution.x; ++x)
         {
             const int index = toIndex(x, y, buffer.resolution.x);
             Image::Pixel pixel;
             pixel.i.r = clamp(static_cast<int>(buffer.alpha[index] * 255.0f), 0, 255);
-            image->set2D(x, dstY, pixel);
+            image->set2D(x, y, pixel);
         }
     }
 
@@ -731,10 +750,9 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer, const Ra
             const int sourceX = region.coord.x + x;
             const int sourceY = region.coord.y + y;
             const int index = toIndex(sourceX, sourceY, buffer.resolution.x);
-            const int dstY = toImageY(y, region.size.y);
             Image::Pixel pixel;
             pixel.i.r = clamp(static_cast<int>(buffer.alpha[index] * 255.0f), 0, 255);
-            image->set2D(x, dstY, pixel);
+            image->set2D(x, y, pixel);
         }
     }
 
@@ -787,7 +805,9 @@ bool SurfaceRasterizer::isUpFacingTriangle(const dvec3& v1, const dvec3& v2, con
     if (length <= Consts::EPS_D)
         return false;
 
-    return std::abs(normal.z / length) >= kMinTerrainSurfaceNormalZ;
+    // Accept only upward-facing triangles (positive Z normal).
+    const double normalizedZ = normal.z / length;
+    return normalizedZ >= kMinTerrainSurfaceNormalZ;
 }
 
 bool SurfaceRasterizer::appendSurfaceTrianglesWorldSpace(const ObjectSurface& objectSurface,

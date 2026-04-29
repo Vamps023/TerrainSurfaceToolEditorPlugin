@@ -90,7 +90,7 @@ void TerrainToolPanel::setupUi()
     comboMaskName->setToolTip(
         "Select the logical landscape mask.\n"
         "Mask 0-3 belong to mask_0 (R/G/B/A), mask 4-7 belong to mask_1, and so on.");
-    for (int maskIndex = 0; maskIndex < 20; ++maskIndex)
+    for (int maskIndex = 0; maskIndex <= kMaxLandscapeMaskIndex; ++maskIndex)
     {
         const int maskPage = maskIndex / 4;
         const QChar channel("RGBA"[maskIndex % 4]);
@@ -368,7 +368,7 @@ void TerrainToolPanel::onPaintCompleteWhite()
         return;
     }
 
-    appendLog(QString("Found %1 mesh node(s)").arg(result.selectedMeshCount));
+    appendLog("Erasing selected terrain tile heightmap data.");
     progressBar->setValue(50);
     progressBar->setValue(100);
     appendLog(result.queued ? "=== Paint White Complete ===" : "=== Paint White Complete (No Changes) ===");

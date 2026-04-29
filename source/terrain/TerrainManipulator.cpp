@@ -253,11 +253,8 @@ bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
                                           const TerrainBrushSettings& settings,
                                           const LogFn& log)
 {
-    if (nodes.empty())
-    {
-        logMessage(log, "ERROR: No selected mesh nodes.");
-        return false;
-    }
+    UNIGINE_UNUSED(nodes);
+    UNIGINE_UNUSED(settings);
 
     TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
     if (!terrainContext.terrain)
@@ -268,51 +265,38 @@ bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
 
     beginActionTransaction();
     bool queuedAnyOperation = false;
+    constexpr float kErasedHeight = 0.0f;
 
-    for (const auto& node : nodes)
+    logMessage(log, "  Erasing selected terrain heightmap data to 0.0 m.");
+
+    for (const auto& tile : terrainContext.layerMaps)
     {
-        if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
+        if (!tile)
             continue;
 
-        ObjectMeshStaticPtr mesh = checked_ptr_cast<ObjectMeshStatic>(node);
-        if (!mesh)
-            continue;
+        const ivec2 tileResolution = tile->getResolution();
+        ImagePtr heightImage = Image::create();
+        heightImage->create2D(tileResolution.x, tileResolution.y, Image::FORMAT_RGBA32F);
 
-        // Use the mesh's top Z in world space as the uniform erase height
-        const WorldBoundBox meshBounds = mesh->getWorldBoundBox();
-        const float paintHeight = static_cast<float>(meshBounds.maximum.z);
+        Image::Pixel pixel;
+        pixel.f.r = kErasedHeight;
+        pixel.f.g = kErasedHeight;
+        pixel.f.b = kErasedHeight;
+        pixel.f.a = 1.0f;
 
-        logMessage(log, "  Erasing entire tile to height = " + std::to_string(paintHeight) + " m (mesh top).");
-
-        for (const auto& tile : terrainContext.layerMaps)
+        for (int x = 0; x < tileResolution.x; ++x)
         {
-            if (!tile || !tile->getWorldBoundBox().insideValid(meshBounds))
-                continue;
-
-            const ivec2 tileResolution = tile->getResolution();
-            ImagePtr heightImage = Image::create();
-            heightImage->create2D(tileResolution.x, tileResolution.y, Image::FORMAT_RGBA32F);
-
-            Image::Pixel pixel;
-            pixel.f.r = paintHeight;
-            pixel.f.g = paintHeight;
-            pixel.f.b = paintHeight;
-            pixel.f.a = 1.0f;  // Full opacity: overwrite entire tile.
-
-            for (int x = 0; x < tileResolution.x; ++x)
-            {
-                for (int y = 0; y < tileResolution.y; ++y)
-                    heightImage->set2D(x, y, pixel);
-            }
-
-            if (setTerrainHeight(tile, heightImage))
-                queuedAnyOperation = true;
+            for (int y = 0; y < tileResolution.y; ++y)
+                heightImage->set2D(x, y, pixel);
         }
+
+        if (setTerrainHeight(tile, heightImage))
+            queuedAnyOperation = true;
     }
 
     finishActionScheduling();
     if (!queuedAnyOperation)
-        logMessage(log, "WARNING: No terrain tiles intersected the selected meshes.");
+        logMessage(log, "WARNING: No terrain heightmap data was queued for erase.");
     return queuedAnyOperation;
 }
 
@@ -658,9 +642,7 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
 
     const ivec2 tileResolution = tile->getResolution();
     const bool useRegion = region.valid();
-    const ivec2 drawCoord = useRegion
-        ? ivec2(region.coord.x, tileResolution.y - region.coord.y - region.size.y)
-        : ivec2_zero;
+    const ivec2 drawCoord = useRegion ? region.coord : ivec2_zero;
     const ivec2 drawSize = useRegion ? region.size : tileResolution;
     if (preparedImage->getWidth() != drawSize.x || preparedImage->getHeight() != drawSize.y)
     {
