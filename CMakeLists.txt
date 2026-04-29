@@ -66,6 +66,8 @@ set(SOURCES
     source/landscape/LandscapeSaveManager.cpp
     source/rasterizer/SurfaceRasterizer.cpp
     source/terrain/TerrainManipulator.cpp
+    source/terrain/TerrainRasterPlanner.cpp
+    source/ui/TerrainToolController.cpp
     source/ui/TerrainToolPanel.cpp
 )
 
@@ -76,6 +78,8 @@ set(HEADERS
     source/rasterizer/SurfaceRasterizer.h
     source/terrain/TerrainBrushSettings.h
     source/terrain/TerrainManipulator.h
+    source/terrain/TerrainRasterPlanner.h
+    source/ui/TerrainToolController.h
     source/ui/TerrainToolPanel.h
 )
 

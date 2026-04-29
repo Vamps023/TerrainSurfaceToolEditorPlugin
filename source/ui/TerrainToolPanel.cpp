@@ -1,7 +1,6 @@
 #include "TerrainToolPanel.h"
 
-#include "../core/TerrainSurfaceToolEditorPlugin.h"
-#include "../terrain/TerrainManipulator.h"
+#include "TerrainToolController.h"
 
 #include <QtGui/QPalette>
 #include <QApplication>
@@ -22,7 +21,7 @@ constexpr int kMaxLandscapeMaskIndex = 19;
 
 TerrainToolPanel::TerrainToolPanel(UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin)
     : QWidget()
-    , plugin(plugin)
+    , controller(std::make_unique<TerrainToolController>(plugin))
 {
     setupUi();
     refreshLandscapeTileOptions(false);
@@ -188,35 +187,14 @@ void TerrainToolPanel::onRefreshLandscapeTiles()
 
 void TerrainToolPanel::refreshSurfaceOptions()
 {
-    if (!comboSurfaceName || !plugin)
+    if (!comboSurfaceName || !controller)
         return;
 
     const QString currentText = comboSurfaceName->currentText();
     comboSurfaceName->blockSignals(true);
     comboSurfaceName->clear();
 
-    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
-    QSet<QString> surfaceNames;
-
-    for (const auto& node : selectedNodes)
-    {
-        if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
-            continue;
-
-        ObjectMeshStaticPtr mesh = checked_ptr_cast<ObjectMeshStatic>(node);
-        if (!mesh)
-            continue;
-
-        for (int i = 0; i < mesh->getNumSurfaces(); ++i)
-        {
-            QString name = QString::fromUtf8(mesh->getSurfaceName(i));
-            if (!name.isEmpty())
-                surfaceNames.insert(name);
-        }
-    }
-
-    QList<QString> sortedNames = surfaceNames.values();
-    std::sort(sortedNames.begin(), sortedNames.end());
+    const QStringList sortedNames = controller->selectedSurfaceNames();
 
     for (const QString& name : sortedNames)
         comboSurfaceName->addItem(name);
@@ -231,16 +209,13 @@ void TerrainToolPanel::refreshSurfaceOptions()
 
 void TerrainToolPanel::checkSelectionChanged()
 {
-    if (!plugin)
+    if (!controller)
         return;
 
-    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
+    const QStringList selectedNames = controller->selectedSurfaceNames();
     QSet<int> currentSelectionIds;
-    for (const auto& node : selectedNodes)
-    {
-        if (node)
-            currentSelectionIds.insert(node->getID());
-    }
+    for (const QString& name : selectedNames)
+        currentSelectionIds.insert(qHash(name));
 
     if (currentSelectionIds != previousSelectionIds)
     {
@@ -274,31 +249,16 @@ TerrainBrushSettings TerrainToolPanel::currentSettings() const
 
 void TerrainToolPanel::refreshLandscapeTileOptions(bool preserveSelection)
 {
-    if (!comboLandscapeTile || !plugin)
+    if (!comboLandscapeTile || !controller)
         return;
 
     const QVariant previousSelection = preserveSelection ? comboLandscapeTile->currentData() : QVariant();
-    const auto terrains = plugin->getLandscapeTerrains();
-    const auto terrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
 
     comboLandscapeTile->blockSignals(true);
     comboLandscapeTile->clear();
-    comboLandscapeTile->addItem("All Tiles", -1);
-
-    if (terrain)
-    {
-        const auto layerMaps = plugin->getLandscapeLayerMaps(terrain);
-        for (const auto& layerMap : layerMaps)
-        {
-            if (!layerMap)
-                continue;
-
-            QString tileName = QString::fromUtf8(layerMap->getName());
-            if (tileName.trimmed().isEmpty())
-                tileName = QString("LandscapeLayerMap %1").arg(layerMap->getID());
-            comboLandscapeTile->addItem(tileName, layerMap->getID());
-        }
-    }
+    const QVector<TerrainToolController::TileOption> options = controller->landscapeTileOptions();
+    for (const TerrainToolController::TileOption& option : options)
+        comboLandscapeTile->addItem(option.label, option.nodeId);
 
     int selectionIndex = 0;
     if (previousSelection.isValid())
@@ -311,17 +271,14 @@ void TerrainToolPanel::refreshLandscapeTileOptions(bool preserveSelection)
     comboLandscapeTile->blockSignals(false);
 }
 
-LandscapeLayerMapPtr TerrainToolPanel::currentLandscapeTile() const
+int TerrainToolPanel::currentLandscapeTileId() const
 {
-    if (!plugin || !comboLandscapeTile)
-        return nullptr;
+    if (!comboLandscapeTile)
+        return -1;
 
     bool ok = false;
     const int tileId = comboLandscapeTile->currentData().toInt(&ok);
-    if (!ok || tileId < 0)
-        return nullptr;
-
-    return plugin->getLandscapeLayerMapById(tileId);
+    return ok ? tileId : -1;
 }
 
 void TerrainToolPanel::onApplyPullTerrain()
@@ -330,51 +287,26 @@ void TerrainToolPanel::onApplyPullTerrain()
     appendLog("=== Pull Terrain To Surface ===");
     progressBar->setValue(0);
 
-    if (!plugin || !plugin->manipulator())
-    {
-        appendLog("ERROR: Plugin is not initialized.");
-        return;
-    }
-
-    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
-    if (selectedNodes.empty())
-    {
-        appendLog("ERROR: No mesh nodes selected.");
-        return;
-    }
-
     const std::string surfaceName = comboSurfaceName->currentText().toStdString();
-    if (surfaceName.empty())
-    {
-        appendLog("ERROR: Surface name is empty.");
-        return;
-    }
-
     const TerrainBrushSettings settings = currentSettings();
-    const auto terrains = plugin->getLandscapeTerrains();
-    const ObjectLandscapeTerrainPtr targetTerrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
-    const LandscapeLayerMapPtr targetTile = currentLandscapeTile();
-    if (!targetTerrain)
-    {
-        appendLog("ERROR: No landscape selected.");
-        return;
-    }
-    appendLog(QString("Found %1 mesh node(s)").arg(selectedNodes.size()));
-    progressBar->setValue(10);
-
-    const bool queued = plugin->manipulator()->pullTerrainToSurface(
-        selectedNodes,
-        targetTerrain,
-        targetTile,
+    const TerrainToolController::ApplyResult result = controller->pullTerrainToSurface(
+        currentLandscapeTileId(),
         surfaceName,
         settings,
         [this](const std::string& message)
         {
             appendLog(QString::fromStdString(message));
         });
+    if (!result.error.isEmpty())
+    {
+        appendLog(result.error);
+        return;
+    }
+    appendLog(QString("Found %1 mesh node(s)").arg(result.selectedMeshCount));
+    progressBar->setValue(10);
 
     progressBar->setValue(100);
-    appendLog(queued ? "=== Pull Terrain Complete ===" : "=== Pull Terrain Complete (No Changes) ===");
+    appendLog(result.queued ? "=== Pull Terrain Complete ===" : "=== Pull Terrain Complete (No Changes) ===");
 }
 
 void TerrainToolPanel::onApplyToMask()
@@ -383,26 +315,7 @@ void TerrainToolPanel::onApplyToMask()
     appendLog("=== Apply to Landscape Mask ===");
     progressBar->setValue(0);
 
-    if (!plugin || !plugin->manipulator())
-    {
-        appendLog("ERROR: Plugin is not initialized.");
-        return;
-    }
-
-    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
-    if (selectedNodes.empty())
-    {
-        appendLog("ERROR: No mesh nodes selected.");
-        return;
-    }
-
     const std::string surfaceName = comboSurfaceName->currentText().toStdString();
-    if (surfaceName.empty())
-    {
-        appendLog("ERROR: Surface name is empty.");
-        return;
-    }
-
     bool ok = false;
     const int maskIndex = comboMaskName ? comboMaskName->currentData().toInt(&ok) : -1;
     if (!ok || maskIndex < 0 || maskIndex > kMaxLandscapeMaskIndex)
@@ -412,21 +325,8 @@ void TerrainToolPanel::onApplyToMask()
     }
 
     const TerrainBrushSettings settings = currentSettings();
-    const auto terrains = plugin->getLandscapeTerrains();
-    const ObjectLandscapeTerrainPtr targetTerrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
-    const LandscapeLayerMapPtr targetTile = currentLandscapeTile();
-    if (!targetTerrain)
-    {
-        appendLog("ERROR: No landscape selected.");
-        return;
-    }
-    appendLog(QString("Found %1 mesh node(s)").arg(selectedNodes.size()));
-    progressBar->setValue(10);
-
-    const bool queued = plugin->manipulator()->applyLandscapeMask(
-        selectedNodes,
-        targetTerrain,
-        targetTile,
+    const TerrainToolController::ApplyResult result = controller->applyLandscapeMask(
+        currentLandscapeTileId(),
         surfaceName,
         settings,
         maskIndex,
@@ -434,10 +334,17 @@ void TerrainToolPanel::onApplyToMask()
         {
             appendLog(QString::fromStdString(message));
         });
+    if (!result.error.isEmpty())
+    {
+        appendLog(result.error);
+        return;
+    }
+    appendLog(QString("Found %1 mesh node(s)").arg(result.selectedMeshCount));
+    progressBar->setValue(10);
 
     progressBar->setValue(100);
-    appendLog(queued ? "=== Apply to Landscape Mask Complete ==="
-                     : "=== Apply to Landscape Mask Complete (No Changes) ===");
+    appendLog(result.queued ? "=== Apply to Landscape Mask Complete ==="
+                            : "=== Apply to Landscape Mask Complete (No Changes) ===");
 }
 
 
@@ -446,43 +353,23 @@ void TerrainToolPanel::onPaintCompleteWhite()
     appendLog("=== Paint Complete White Height ===");
     progressBar->setValue(0);
 
-    if (!plugin || !plugin->manipulator())
-    {
-        appendLog("ERROR: Plugin is not initialized.");
-        return;
-    }
-
-    const std::vector<NodePtr> selectedNodes = plugin->getSelectedMeshNodes();
-    if (selectedNodes.empty())
-    {
-        appendLog("ERROR: No mesh nodes selected.");
-        return;
-    }
-
     progressBar->setValue(10);
-    const auto terrains = plugin->getLandscapeTerrains();
-    const ObjectLandscapeTerrainPtr targetTerrain = !terrains.empty() ? terrains.front() : Landscape::getActiveTerrain();
-    const LandscapeLayerMapPtr targetTile = currentLandscapeTile();
-    if (!targetTerrain)
-    {
-        appendLog("ERROR: No landscape selected.");
-        return;
-    }
-
-    appendLog(QString("Found %1 mesh node(s)").arg(selectedNodes.size()));
-    progressBar->setValue(50);
-
     const TerrainBrushSettings settings = currentSettings();
-    const bool queued = plugin->manipulator()->paintWhiteHeight(
-        selectedNodes,
-        targetTerrain,
-        targetTile,
+    const TerrainToolController::ApplyResult result = controller->paintWhiteHeight(
+        currentLandscapeTileId(),
         settings,
         [this](const std::string& message)
         {
             appendLog(QString::fromStdString(message));
         });
+    if (!result.error.isEmpty())
+    {
+        appendLog(result.error);
+        return;
+    }
 
+    appendLog(QString("Found %1 mesh node(s)").arg(result.selectedMeshCount));
+    progressBar->setValue(50);
     progressBar->setValue(100);
-    appendLog(queued ? "=== Paint White Complete ===" : "=== Paint White Complete (No Changes) ===");
+    appendLog(result.queued ? "=== Paint White Complete ===" : "=== Paint White Complete (No Changes) ===");
 }

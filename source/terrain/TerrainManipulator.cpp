@@ -1,6 +1,7 @@
 #define _USE_MATH_DEFINES
 
 #include "TerrainManipulator.h"
+#include "TerrainRasterPlanner.h"
 
 #include <UnigineFileSystem.h>
 #include <UnigineLog.h>
@@ -102,41 +103,22 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
 
     bool queuedAnyOperation = false;
 
-    for (const auto& node : nodes)
+    const std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
+        TerrainRasterPlanner::buildHeightPlans(nodes, terrainContext.layerMaps, query);
+    for (auto plan : plans)
     {
-        if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
-            continue;
+        logMessage(log, "  Tile '" + std::string(plan.tile->getName()) + "': rasterized "
+                        + std::to_string(plan.mergedSurfaceCount) + " selected surface(s) together.");
 
-        ObjectMeshStaticPtr mesh = checked_ptr_cast<ObjectMeshStatic>(node);
-        if (!mesh)
-            continue;
-
-        const std::vector<int> surfaceIds = SurfaceRasterizer::findMatchingSurfaceIds(mesh, query);
-        if (surfaceIds.empty())
-            continue;
-
-        const WorldBoundBox nodeBounds = mesh->getWorldBoundBox();
-
-        for (int surfaceId : surfaceIds)
+        if (queueHeightRasterForTile(terrainContext,
+                                     plan.tile,
+                                     plan.rasterBuffer,
+                                     flatDistance,
+                                     falloffDistance,
+                                     settings,
+                                     log))
         {
-            ObjectSurface objectSurface = std::make_pair(static_ptr_cast<Object>(mesh), surfaceId);
-
-            for (const auto& tile : terrainContext.layerMaps)
-            {
-                if (!tile || !tile->getWorldBoundBox().insideValid(nodeBounds))
-                    continue;
-
-                if (queueHeightRasterForTile(terrainContext,
-                                             tile,
-                                             objectSurface,
-                                             flatDistance,
-                                             falloffDistance,
-                                             settings,
-                                             log))
-                {
-                    queuedAnyOperation = true;
-                }
-            }
+            queuedAnyOperation = true;
         }
     }
 
@@ -179,42 +161,21 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
     bool queuedAnyOperation = false;
     const double maskFlatDistance = effectiveFlatDistance(settings);
 
-    for (const auto& node : nodes)
+    const std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
+        TerrainRasterPlanner::buildMaskPlans(nodes, terrainContext.layerMaps, query);
+    for (auto plan : plans)
     {
-        if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
-            continue;
-
-        ObjectMeshStaticPtr mesh = checked_ptr_cast<ObjectMeshStatic>(node);
-        if (!mesh)
-            continue;
-
-        const std::vector<int> surfaceIds = SurfaceRasterizer::findMatchingSurfaceIds(mesh, query);
-        if (surfaceIds.empty())
-            continue;
-
-        const WorldBoundBox nodeBounds = mesh->getWorldBoundBox();
-        for (int surfaceId : surfaceIds)
+        SurfaceRasterizer::applyDistanceFalloff(plan.tile,
+                                                plan.rasterBuffer,
+                                                maskFlatDistance,
+                                                settings.falloffDistance);
+        const SurfaceRasterizer::RasterRegion region = SurfaceRasterizer::calculateTouchedRegion(plan.rasterBuffer);
+        const ImagePtr maskImage = SurfaceRasterizer::createMaskImage(plan.rasterBuffer, region);
+        if (maskImage && setTerrainMask(plan.tile, maskImage, settings, maskIndex, region))
         {
-            ObjectSurface objectSurface = std::make_pair(static_ptr_cast<Object>(mesh), surfaceId);
-            SurfaceRasterizer::RasterBuffer rasterBuffer;
-
-            for (const auto& tile : terrainContext.layerMaps)
-            {
-                if (!tile || !tile->getWorldBoundBox().insideValid(nodeBounds))
-                    continue;
-
-                if (!SurfaceRasterizer::rasterizeSurfaceMask(tile, objectSurface, rasterBuffer))
-                    continue;
-
-                SurfaceRasterizer::applyDistanceFalloff(tile,
-                                                        rasterBuffer,
-                                                        maskFlatDistance,
-                                                        settings.falloffDistance);
-
-                const ImagePtr maskImage = SurfaceRasterizer::createMaskImage(rasterBuffer);
-                if (maskImage && setTerrainMask(tile, maskImage, settings, maskIndex))
-                    queuedAnyOperation = true;
-            }
+            logMessage(log, "  Tile '" + std::string(plan.tile->getName()) + "': rasterized "
+                            + std::to_string(plan.mergedSurfaceCount) + " selected surface(s) into one mask operation.");
+            queuedAnyOperation = true;
         }
     }
 
@@ -432,21 +393,14 @@ TerrainManipulator::TerrainContext TerrainManipulator::buildTerrainContext(const
 
 bool TerrainManipulator::queueHeightRasterForTile(const TerrainContext& terrainContext,
                                                   const LandscapeLayerMapPtr& tile,
-                                                  const ObjectSurface& objectSurface,
+                                                  SurfaceRasterizer::RasterBuffer& rasterBuffer,
                                                   double flatDistance,
                                                   double falloffDistance,
                                                   const TerrainBrushSettings& settings,
                                                   const LogFn& log)
 {
-    SurfaceRasterizer::RasterBuffer rasterBuffer;
-    if (!SurfaceRasterizer::rasterizeSurfaceHeight(tile, objectSurface, rasterBuffer))
-    {
-        logMessage(log, "  Tile '" + std::string(tile->getName()) + "': no pixels covered by mesh surface.");
+    if (rasterBuffer.empty())
         return false;
-    }
-
-    logMessage(log, "  Tile '" + std::string(tile->getName()) + "': rasterized "
-                    + std::to_string(rasterBuffer.seeds.size()) + " seed pixels.");
 
     SurfaceRasterizer::applyDistanceFalloff(tile,
                                             rasterBuffer,
@@ -462,12 +416,13 @@ bool TerrainManipulator::queueHeightRasterForTile(const TerrainContext& terrainC
                                                        terrainContext.fetch,
                                                        rasterBuffer);
 
-    const ImagePtr heightImage = SurfaceRasterizer::createHeightImage(rasterBuffer);
+    const SurfaceRasterizer::RasterRegion region = SurfaceRasterizer::calculateTouchedRegion(rasterBuffer);
+    const ImagePtr heightImage = SurfaceRasterizer::createHeightImage(rasterBuffer, region);
     if (!heightImage)
         return false;
 
     saveDebugRasterImages(tile, rasterBuffer, log);
-    return setTerrainHeight(tile, heightImage);
+    return setTerrainHeight(tile, heightImage, region);
 }
 
 void TerrainManipulator::saveDebugRasterImages(const LandscapeLayerMapPtr& tile,
@@ -638,7 +593,9 @@ void TerrainManipulator::calculateDrawingRegion(const dvec3& brushLocalPosition,
     outSize = ivec2(pixelsPerUnit * round(bboxMax - bboxMin));
 }
 
-bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile, const ImagePtr& heightImage)
+bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile,
+                                          const ImagePtr& heightImage,
+                                          const SurfaceRasterizer::RasterRegion& region)
 {
     if (!tile || !heightImage)
         return false;
@@ -651,13 +608,18 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile, cons
     }
 
     const ivec2 tileResolution = tile->getResolution();
-    if (preparedImage->getWidth() != tileResolution.x || preparedImage->getHeight() != tileResolution.y)
+    const bool useRegion = region.valid();
+    const ivec2 drawCoord = useRegion ? region.coord : ivec2_zero;
+    const ivec2 drawSize = useRegion ? region.size : tileResolution;
+    if (preparedImage->getWidth() != drawSize.x || preparedImage->getHeight() != drawSize.y)
     {
-        if (!preparedImage->resize(tileResolution.x, tileResolution.y))
+        if (!preparedImage->resize(drawSize.x, drawSize.y))
             return false;
     }
 
-    const ImagePtr alphaImage = SurfaceRasterizer::createHeightAlphaImage(preparedImage);
+    const ImagePtr alphaImage = useRegion
+        ? SurfaceRasterizer::createHeightAlphaImage(preparedImage, region)
+        : SurfaceRasterizer::createHeightAlphaImage(preparedImage);
     if (!alphaImage)
         return false;
 
@@ -665,13 +627,15 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile, cons
     operation.heightImage = preparedImage;
     operation.alphaImage = alphaImage;
     operation.modifyHeights = true;
+    operation.drawCoord = drawCoord;
+    operation.drawSize = drawSize;
 
     const int operationId = Landscape::generateOperationID();
     pendingOperations[operationId] = operation;
     Landscape::asyncTextureDraw(operationId,
                                 tile->getGUID(),
-                                ivec2_zero,
-                                tileResolution,
+                                drawCoord,
+                                drawSize,
                                 Landscape::FLAGS_FILE_DATA_HEIGHT | Landscape::FLAGS_FILE_DATA_OPACITY_HEIGHT);
     return true;
 }
@@ -679,7 +643,8 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile, cons
 bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
                                         const ImagePtr& maskImage,
                                         const TerrainBrushSettings& settings,
-                                        int maskIndex)
+                                        int maskIndex,
+                                        const SurfaceRasterizer::RasterRegion& region)
 {
     if (!tile || !maskImage)
         return false;
@@ -692,9 +657,14 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
     }
 
     const ivec2 tileResolution = tile->getResolution();
-    if (preparedImage->getWidth() != tileResolution.x || preparedImage->getHeight() != tileResolution.y)
+    const bool useRegion = region.valid();
+    const ivec2 drawCoord = useRegion
+        ? ivec2(region.coord.x, tileResolution.y - region.coord.y - region.size.y)
+        : ivec2_zero;
+    const ivec2 drawSize = useRegion ? region.size : tileResolution;
+    if (preparedImage->getWidth() != drawSize.x || preparedImage->getHeight() != drawSize.y)
     {
-        if (!preparedImage->resize(tileResolution.x, tileResolution.y))
+        if (!preparedImage->resize(drawSize.x, drawSize.y))
             return false;
     }
 
@@ -707,6 +677,8 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
     operation.brushSize = static_cast<float>(std::max(1.0, settings.brushSize));
     operation.modifyMask = true;
     operation.maskIndex = maskIndex;
+    operation.drawCoord = drawCoord;
+    operation.drawSize = drawSize;
 
     const int maskFlags = getMaskFileDataFlags(maskIndex);
     if (maskFlags == 0)
@@ -714,7 +686,7 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
 
     const int operationId = Landscape::generateOperationID();
     pendingOperations[operationId] = operation;
-    Landscape::asyncTextureDraw(operationId, tile->getGUID(), ivec2_zero, tileResolution, maskFlags);
+    Landscape::asyncTextureDraw(operationId, tile->getGUID(), drawCoord, drawSize, maskFlags);
     return true;
 }
 

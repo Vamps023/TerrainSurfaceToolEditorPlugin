@@ -18,10 +18,13 @@
 
 #include <UnigineObjects.h>
 
+#include <memory>
+
 namespace UnigineEditor
 {
 class TerrainSurfaceToolEditorPlugin;
 }
+class TerrainToolController;
 
 class TerrainToolPanel : public QWidget
 {
@@ -47,9 +50,9 @@ private:
     void appendLog(const QString& message);
     TerrainBrushSettings currentSettings() const;
     void refreshLandscapeTileOptions(bool preserveSelection = true);
-    Unigine::LandscapeLayerMapPtr currentLandscapeTile() const;
+    int currentLandscapeTileId() const;
 
-    UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin = nullptr;
+    std::unique_ptr<TerrainToolController> controller;
 
     QComboBox* comboSurfaceName = nullptr;
     QComboBox* comboLandscapeTile = nullptr;

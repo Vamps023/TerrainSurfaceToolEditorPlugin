@@ -82,6 +82,8 @@ private:
         bool modifyAlbedo = false;
         bool modifyMask = false;
         int maskIndex = 0;
+        Unigine::Math::ivec2 drawCoord = Unigine::Math::ivec2_zero;
+        Unigine::Math::ivec2 drawSize = Unigine::Math::ivec2_zero;
     };
 
     static constexpr bool kDebugHotPathLogs = false;
@@ -116,11 +118,14 @@ private:
                                        Unigine::Math::ivec2& outCoord,
                                        Unigine::Math::ivec2& outSize);
 
-    bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile, const Unigine::ImagePtr& heightImage);
+    bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile,
+                          const Unigine::ImagePtr& heightImage,
+                          const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
     bool setTerrainMask(const Unigine::LandscapeLayerMapPtr& tile,
                         const Unigine::ImagePtr& maskImage,
                         const TerrainBrushSettings& settings,
-                        int maskIndex);
+                        int maskIndex,
+                        const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
     bool applyHeightOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
                               const Unigine::TexturePtr& heightTexture,
                               const Unigine::TexturePtr& alphaTexture);
@@ -133,7 +138,7 @@ private:
                         const Unigine::LandscapeTexturesPtr& buffer);
     bool queueHeightRasterForTile(const TerrainContext& terrainContext,
                                   const Unigine::LandscapeLayerMapPtr& tile,
-                                  const ObjectSurface& objectSurface,
+                                  SurfaceRasterizer::RasterBuffer& rasterBuffer,
                                   double flatDistance,
                                   double falloffDistance,
                                   const TerrainBrushSettings& settings,

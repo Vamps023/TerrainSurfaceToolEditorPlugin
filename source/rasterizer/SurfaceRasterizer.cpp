@@ -260,6 +260,33 @@ bool SurfaceRasterizer::rasterizeSurfaceMask(const LandscapeLayerMapPtr& terrain
     return true;
 }
 
+bool SurfaceRasterizer::mergeRasterBuffer(RasterBuffer& target, const RasterBuffer& source)
+{
+    if (source.resolution.x <= 0 || source.resolution.y <= 0)
+        return false;
+
+    if (target.resolution != source.resolution)
+        target.reset(source.resolution);
+
+    bool modified = false;
+    const int pixelCount = source.resolution.x * source.resolution.y;
+    for (int pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex)
+    {
+        if (source.sourceIndex[pixelIndex] < 0 || source.alpha[pixelIndex] <= 0.0f)
+            continue;
+
+        if (target.sourceIndex[pixelIndex] < 0)
+            target.seeds.push_back(pixelIndex);
+
+        target.values[pixelIndex] = source.values[pixelIndex];
+        target.alpha[pixelIndex] = source.alpha[pixelIndex];
+        target.sourceIndex[pixelIndex] = pixelIndex;
+        modified = true;
+    }
+
+    return modified;
+}
+
 void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrainTile,
                                              RasterBuffer& buffer,
                                              double flatDistance,
@@ -544,6 +571,33 @@ ImagePtr SurfaceRasterizer::createHeightImage(const RasterBuffer& buffer)
     return image;
 }
 
+ImagePtr SurfaceRasterizer::createHeightImage(const RasterBuffer& buffer, const RasterRegion& region)
+{
+    if (!region.valid())
+        return nullptr;
+
+    ImagePtr image = Image::create();
+    image->create2D(region.size.x, region.size.y, Image::FORMAT_RGBA32F);
+
+    for (int y = 0; y < region.size.y; ++y)
+    {
+        for (int x = 0; x < region.size.x; ++x)
+        {
+            const int sourceX = region.coord.x + x;
+            const int sourceY = region.coord.y + y;
+            const int index = toIndex(sourceX, sourceY, buffer.resolution.x);
+            Image::Pixel pixel;
+            pixel.f.r = buffer.values[index];
+            pixel.f.g = buffer.values[index];
+            pixel.f.b = buffer.values[index];
+            pixel.f.a = buffer.alpha[index];
+            image->set2D(x, y, pixel);
+        }
+    }
+
+    return image;
+}
+
 ImagePtr SurfaceRasterizer::createHeightAlphaImage(const ImagePtr& heightImage)
 {
     if (!heightImage)
@@ -555,6 +609,31 @@ ImagePtr SurfaceRasterizer::createHeightAlphaImage(const ImagePtr& heightImage)
     for (int x = 0; x < heightImage->getWidth(); ++x)
     {
         for (int y = 0; y < heightImage->getHeight(); ++y)
+        {
+            const Image::Pixel src = heightImage->get2D(x, y);
+            Image::Pixel dst;
+            dst.f.r = src.f.a;
+            dst.f.g = src.f.a;
+            dst.f.b = src.f.a;
+            dst.f.a = src.f.a;
+            alphaImage->set2D(x, y, dst);
+        }
+    }
+
+    return alphaImage;
+}
+
+ImagePtr SurfaceRasterizer::createHeightAlphaImage(const ImagePtr& heightImage, const RasterRegion& region)
+{
+    if (!heightImage || !region.valid())
+        return nullptr;
+
+    ImagePtr alphaImage = Image::create();
+    alphaImage->create2D(region.size.x, region.size.y, Image::FORMAT_RGBA32F);
+
+    for (int x = 0; x < region.size.x; ++x)
+    {
+        for (int y = 0; y < region.size.y; ++y)
         {
             const Image::Pixel src = heightImage->get2D(x, y);
             Image::Pixel dst;
@@ -586,6 +665,65 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer)
         for (int x = 0; x < buffer.resolution.x; ++x)
         {
             const int index = toIndex(x, y, buffer.resolution.x);
+            Image::Pixel pixel;
+            pixel.i.r = clamp(static_cast<int>(buffer.alpha[index] * 255.0f), 0, 255);
+            image->set2D(x, dstY, pixel);
+        }
+    }
+
+    return image;
+}
+
+SurfaceRasterizer::RasterRegion SurfaceRasterizer::calculateTouchedRegion(const RasterBuffer& buffer)
+{
+    RasterRegion region;
+    if (buffer.resolution.x <= 0 || buffer.resolution.y <= 0)
+        return region;
+
+    int minX = buffer.resolution.x;
+    int minY = buffer.resolution.y;
+    int maxX = -1;
+    int maxY = -1;
+
+    for (int y = 0; y < buffer.resolution.y; ++y)
+    {
+        for (int x = 0; x < buffer.resolution.x; ++x)
+        {
+            const int index = toIndex(x, y, buffer.resolution.x);
+            if (buffer.alpha[index] <= 0.0f)
+                continue;
+
+            minX = std::min(minX, x);
+            minY = std::min(minY, y);
+            maxX = std::max(maxX, x);
+            maxY = std::max(maxY, y);
+        }
+    }
+
+    if (maxX < minX || maxY < minY)
+        return region;
+
+    region.coord = ivec2(minX, minY);
+    region.size = ivec2(maxX - minX + 1, maxY - minY + 1);
+    return region;
+}
+
+ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer, const RasterRegion& region)
+{
+    if (!region.valid())
+        return nullptr;
+
+    ImagePtr image = Image::create();
+    image->create2D(region.size.x, region.size.y, Image::FORMAT_R8);
+
+    for (int y = 0; y < region.size.y; ++y)
+    {
+        for (int x = 0; x < region.size.x; ++x)
+        {
+            const int sourceX = region.coord.x + x;
+            const int sourceY = region.coord.y + y;
+            const int index = toIndex(sourceX, sourceY, buffer.resolution.x);
+            const int dstY = toImageY(y, region.size.y);
             Image::Pixel pixel;
             pixel.i.r = clamp(static_cast<int>(buffer.alpha[index] * 255.0f), 0, 255);
             image->set2D(x, dstY, pixel);
