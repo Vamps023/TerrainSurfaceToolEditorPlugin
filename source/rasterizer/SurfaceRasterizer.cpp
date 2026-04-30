@@ -607,11 +607,15 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer)
     ImagePtr image = Image::create();
     image->create2D(buffer.resolution.x, buffer.resolution.y, Image::FORMAT_R8);
 
+    // The standard Unigine terrain brush samples the opacity texture via UV coordinates
+    // where (0,0) is at the bottom-left (OpenGL convention). Image::set2D writes with
+    // y=0 at the top, so the mask must be Y-flipped to align with the mesh footprint.
     for (int y = 0; y < buffer.resolution.y; ++y)
     {
+        const int srcY = buffer.resolution.y - 1 - y;
         for (int x = 0; x < buffer.resolution.x; ++x)
         {
-            const int index = toIndex(x, y, buffer.resolution.x);
+            const int index = toIndex(x, srcY, buffer.resolution.x);
             Image::Pixel pixel;
             pixel.i.r = clamp(static_cast<int>(buffer.alpha[index] * 255.0f), 0, 255);
             image->set2D(x, y, pixel);
@@ -663,13 +667,14 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer, const Ra
     ImagePtr image = Image::create();
     image->create2D(region.size.x, region.size.y, Image::FORMAT_R8);
 
+    // Y-flip: standard Unigine brush UV origin is bottom-left; Image::set2D y=0 is top.
     for (int y = 0; y < region.size.y; ++y)
     {
+        const int srcY = region.coord.y + (region.size.y - 1 - y);
         for (int x = 0; x < region.size.x; ++x)
         {
             const int sourceX = region.coord.x + x;
-            const int sourceY = region.coord.y + y;
-            const int index = toIndex(sourceX, sourceY, buffer.resolution.x);
+            const int index = toIndex(sourceX, srcY, buffer.resolution.x);
             Image::Pixel pixel;
             pixel.i.r = clamp(static_cast<int>(buffer.alpha[index] * 255.0f), 0, 255);
             image->set2D(x, y, pixel);
