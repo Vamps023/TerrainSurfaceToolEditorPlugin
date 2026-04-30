@@ -49,5 +49,8 @@ desktop.ini
 world_builder/temp/
 *.png
 
+# Machine-local build scripts (rename to build_ninja.bat.example for sharing)
+build_ninja.bat
+
 # Deployment (we'll build/deploy locally)
 deploy/

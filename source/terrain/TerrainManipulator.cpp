@@ -162,53 +162,6 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
     return queuedAnyOperation;
 }
 
-bool TerrainManipulator::resetTerrainHeights(const std::vector<NodePtr>& nodes,
-                                             const ObjectLandscapeTerrainPtr& terrain,
-                                             const LandscapeLayerMapPtr& targetTile,
-                                             const LogFn& log)
-{
-    if (nodes.empty())
-    {
-        logMessage(log, "ERROR: No selected mesh nodes.");
-        return false;
-    }
-
-    TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
-    if (!terrainContext.terrain)
-    {
-        logMessage(log, "ERROR: No active landscape terrain.");
-        return false;
-    }
-
-    beginActionTransaction();
-    bool queuedAnyOperation = false;
-
-    for (const auto& node : nodes)
-    {
-        if (!node || node->getType() != Node::OBJECT_MESH_STATIC)
-            continue;
-
-        ObjectMeshStaticPtr mesh = checked_ptr_cast<ObjectMeshStatic>(node);
-        if (!mesh)
-            continue;
-
-        for (const auto& tile : terrainContext.layerMaps)
-        {
-            if (!tile || !tile->getWorldBoundBox().insideValid(mesh->getWorldBoundBox()))
-                continue;
-
-            const ImagePtr heightImage = createSolidHeightImage(tile->getResolution(), 0.0f);
-            if (setTerrainHeight(tile, heightImage))
-                queuedAnyOperation = true;
-        }
-    }
-
-    finishActionScheduling();
-    if (!queuedAnyOperation)
-        logMessage(log, "WARNING: No terrain tiles intersected the selected meshes.");
-    return queuedAnyOperation;
-}
-
 bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
                                           const ObjectLandscapeTerrainPtr& terrain,
                                           const LandscapeLayerMapPtr& targetTile,
@@ -595,35 +548,6 @@ bool TerrainManipulator::applyHeightOverwrite(const LandscapeTexturesPtr& buffer
     return true;
 }
 
-bool TerrainManipulator::applyAlbedoOverwrite(const LandscapeTexturesPtr& buffer,
-                                              const ImagePtr& albedoImage)
-{
-    if (!buffer || !albedoImage)
-    {
-        Log::error("[TerrainManipulator] applyAlbedoOverwrite: null buffer or albedo image.\n");
-        return false;
-    }
-
-    const MaterialPtr brushMaterial = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
-                                                             "terrain albedo overwrite");
-    if (!brushMaterial)
-        return false;
-
-    TexturePtr albedoTexture = Texture::create();
-    if (!albedoTexture || !albedoTexture->create(albedoImage))
-    {
-        Log::error("[TerrainManipulator] applyAlbedoOverwrite: failed to create albedo texture from image.\n");
-        return false;
-    }
-
-    brushMaterial->setTexture("terrain_height", buffer->getAlbedo());
-    brushMaterial->setTexture("new_height", albedoTexture);
-    brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-    clearBrushMaterialTextures(brushMaterial);
-    brushMaterial->setTexture("new_height", nullptr);
-    return true;
-}
-
 bool TerrainManipulator::applyBrush(const BrushOperationData& operation,
                                     const LandscapeTexturesPtr& buffer,
                                     int dataMask)
@@ -645,9 +569,6 @@ bool TerrainManipulator::applyBrush(const BrushOperationData& operation,
     if (operation.modifyHeights)
         return applyHeightBrushData(operation, buffer, dataMask);
 
-    if (operation.modifyAlbedo)
-        return applyAlbedoBrushData(operation, buffer, dataMask);
-
     Log::error("[TerrainManipulator] applyBrush: no modify flag set on operation.\n");
     return false;
 }
@@ -661,20 +582,6 @@ bool TerrainManipulator::applyHeightBrushData(const BrushOperationData& operatio
     brushMaterial->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
     brushMaterial->setParameterFloat("height", operation.brushHeight);
     brushMaterial->setParameterInt("data_mask", dataMask);
-    brushMaterial->setState("height_blend_mode", static_cast<int>(operation.heightBlendMode));
-    brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-    clearBrushMaterialTextures(brushMaterial);
-    return true;
-}
-
-bool TerrainManipulator::applyAlbedoBrushData(const BrushOperationData& operation,
-                                              const LandscapeTexturesPtr& buffer,
-                                              int dataMask)
-{
-    MaterialPtr brushMaterial = operation.brushMaterial;
-    brushMaterial->setTexture("terrain_albedo", buffer->getAlbedo());
-    brushMaterial->setParameterInt("data_mask", dataMask);
-    brushMaterial->setState("height_blend_mode", static_cast<int>(operation.heightBlendMode));
     brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
     clearBrushMaterialTextures(brushMaterial);
     return true;
@@ -757,10 +664,6 @@ void TerrainManipulator::onTextureDraw(const UGUID& guid, int operationId,
             applied = applyHeightOverwrite(buffer, operation.brushMaterial, heightTexture, alphaTexture);
         }
     }
-    else if (operation.albedoImage)
-    {
-        applied = applyAlbedoOverwrite(buffer, operation.albedoImage);
-    }
     else
     {
         applied = applyBrush(operation, buffer, dataMask);
@@ -818,7 +721,6 @@ void TerrainManipulator::clearBrushMaterialTextures(const MaterialPtr& brushMate
 
     brushMaterial->setTexture("terrain_height", nullptr);
     brushMaterial->setTexture("terrain_opacity_height", nullptr);
-    brushMaterial->setTexture("terrain_albedo", nullptr);
 }
 
 MaterialPtr TerrainManipulator::createMaskBrush(const ImagePtr& maskImage)

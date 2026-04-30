@@ -46,13 +46,6 @@ public:
                             int maskIndex,
                             const LogFn& log);
 
-    // Resets the heightmap to 0 for all tiles that intersect the given nodes.
-    // Returns true if at least one tile was modified.
-    bool resetTerrainHeights(const std::vector<Unigine::NodePtr>& nodes,
-                             const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                             const Unigine::LandscapeLayerMapPtr& targetTile,
-                             const LogFn& log);
-
     // Erases all heightmap data (sets height to 0) on all tiles of the terrain.
     // Returns true if at least one tile was modified.
     bool paintWhiteHeight(const std::vector<Unigine::NodePtr>& nodes,
@@ -69,12 +62,6 @@ public:
     void flushPendingSaves();
 
 private:
-    enum class HeightBlendMode
-    {
-        Alpha = 0,
-        Additive = 1,
-    };
-
     struct TerrainContext
     {
         Unigine::ObjectLandscapeTerrainPtr terrain;
@@ -85,16 +72,13 @@ private:
     struct BrushOperationData
     {
         Unigine::MaterialPtr brushMaterial;
-        Unigine::ImagePtr albedoImage;
         Unigine::ImagePtr heightImage;
         Unigine::ImagePtr alphaImage;
         float brushHeight = 0.0f;
         float brushSize = 1.0f;
         float brushRotation = 0.0f;
         float brushOpacity = 1.0f;
-        HeightBlendMode heightBlendMode = HeightBlendMode::Alpha;
         bool modifyHeights = false;
-        bool modifyAlbedo = false;
         bool modifyMask = false;
         int maskIndex = 0;
         Unigine::Math::ivec2 drawCoord = Unigine::Math::ivec2_zero;
@@ -132,8 +116,6 @@ private:
                               const Unigine::MaterialPtr& brushMaterial,
                               const Unigine::TexturePtr& heightTexture,
                               const Unigine::TexturePtr& alphaTexture);
-    bool applyAlbedoOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
-                              const Unigine::ImagePtr& albedoImage);
     bool applyBrush(const BrushOperationData& operation,
                     const Unigine::LandscapeTexturesPtr& buffer,
                     int dataMask);
@@ -157,9 +139,6 @@ private:
                                       const LogFn& log);
     // Sub-methods used by applyBrush to handle each modification mode.
     bool applyHeightBrushData(const BrushOperationData& operation,
-                              const Unigine::LandscapeTexturesPtr& buffer,
-                              int dataMask);
-    bool applyAlbedoBrushData(const BrushOperationData& operation,
                               const Unigine::LandscapeTexturesPtr& buffer,
                               int dataMask);
 

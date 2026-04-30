@@ -14,6 +14,11 @@
 
 using namespace Unigine;
 
+namespace
+{
+constexpr double kDefaultBrushSize = 10.0;       // legacy stamp-mode radius; only used by mask apply path
+constexpr double kDefaultSmoothingStrength = 0.5; // reserved for future smoothing pass
+}
 
 TerrainToolPanel::TerrainToolPanel(UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin)
     : QWidget()
@@ -265,10 +270,10 @@ void TerrainToolPanel::appendLog(const QString& message)
 TerrainBrushSettings TerrainToolPanel::currentSettings() const
 {
     TerrainBrushSettings settings;
-    settings.brushSize = 10.0;  // legacy default; only used by mask apply path
+    settings.brushSize = kDefaultBrushSize;
     settings.flatDistance = spinFlatDistance ? spinFlatDistance->value() : 30.0;
     settings.falloffDistance = spinFalloffDistance ? spinFalloffDistance->value() : 30.0;
-    settings.smoothingStrength = 0.5;
+    settings.smoothingStrength = kDefaultSmoothingStrength;
     settings.clampToOriginal = false;
     return settings;
 }
