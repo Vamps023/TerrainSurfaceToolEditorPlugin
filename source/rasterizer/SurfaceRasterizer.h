@@ -7,7 +7,8 @@
 #include <UnigineNodes.h>
 #include <UnigineObjects.h>
 
-#include <regex>
+#include "SurfaceQuery.h"
+
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -20,13 +21,9 @@ using ObjectSurface = std::pair<Unigine::ObjectPtr, int>;
 class SurfaceRasterizer
 {
 public:
-    // Compiled surface-name filter: supports exact name matching and regex.
-    struct SurfaceQuery
-    {
-        std::string raw;       // original pattern string
-        bool useRegex = false; // true when pattern compiled as regex
-        std::regex regex;      // compiled regex (valid only when useRegex == true)
-    };
+    // Re-export the global SurfaceQuery as a nested type so existing
+    // SurfaceRasterizer::SurfaceQuery references continue to compile.
+    using SurfaceQuery = ::SurfaceQuery;
 
     // Per-tile CPU raster buffer storing world-space heights and blend alphas
     // for every pixel of a LandscapeLayerMap tile.
@@ -63,20 +60,6 @@ public:
 
     // Recursively collects all ObjectMeshStatic nodes under roots.
     static std::vector<Unigine::NodePtr> collectMeshNodesRecursive(const std::vector<Unigine::NodePtr>& roots);
-
-    // Extracts all vertex positions of surfaceId in world space.
-    static bool extractSurfaceVerticesWorldSpace(const Unigine::ObjectMeshStaticPtr& mesh,
-                                                 int surfaceId,
-                                                 std::vector<Unigine::Math::vec3>& outVertices);
-
-    // Builds a list of edge midpoints from a list of surface vertices.
-    static void buildMidpointPath(const std::vector<Unigine::Math::vec3>& surfaceVertices,
-                                  std::vector<Unigine::Math::vec3>& outMidpoints);
-
-    // Resamples a polyline at uniform spacing, inserting intermediate points.
-    static void samplePolyline(const std::vector<Unigine::Math::vec3>& points,
-                               double spacing,
-                               std::vector<Unigine::Math::vec3>& outSamples);
 
     // Rasterizes the triangles of objectSurface into outBuffer as world-space heights.
     // Only up-facing triangles (normal.z >= kMinTerrainSurfaceNormalZ) are written.
@@ -136,7 +119,6 @@ private:
     static constexpr float kEpsilon = 1e-6f;
 
     static int toIndex(int x, int y, int width);
-    static int toImageY(int y, int height);
     static bool pointInTriangle(const Unigine::Math::Vec3& point,
                                 const Unigine::Math::Vec3& v1,
                                 const Unigine::Math::Vec3& v2,

@@ -1,5 +1,9 @@
 #pragma once
 
+// Highest valid logical landscape mask index (5 pages x 4 RGBA channels - 1).
+// Referenced by TerrainManipulator and TerrainToolPanel.
+static constexpr int kMaxLandscapeMaskIndex = 19;
+
 // Settings that control how the terrain brush rasterizes and blends
 // the mesh surface footprint onto the landscape heightmap/mask.
 struct TerrainBrushSettings

@@ -48,15 +48,14 @@ QStringList TerrainToolController::selectedSurfaceNames() const
 
 bool TerrainToolController::hasSelectionChanged()
 {
+    // Fast path: walk all nodes only when we actually need to rebuild the name set.
     const QStringList currentNames = selectedSurfaceNames();
-    QSet<int> currentIds;
-    for (const QString& name : currentNames)
-        currentIds.insert(qHash(name));
+    const QSet<QString> currentIds = QSet<QString>::fromList(currentNames);
 
     if (currentIds == previousSelectionIds)
         return false;
 
-    previousSelectionIds = currentIds;
+    previousSelectionIds = std::move(currentIds);
     return true;
 }
 

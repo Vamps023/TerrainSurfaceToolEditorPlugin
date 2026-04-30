@@ -75,6 +75,7 @@ set(HEADERS
     source/core/TerrainSurfaceToolEditorPlugin.h
     source/core/NodeTreeWalker.h
     source/landscape/LandscapeSaveManager.h
+    source/rasterizer/SurfaceQuery.h
     source/rasterizer/SurfaceRasterizer.h
     source/terrain/TerrainBrushSettings.h
     source/terrain/TerrainManipulator.h

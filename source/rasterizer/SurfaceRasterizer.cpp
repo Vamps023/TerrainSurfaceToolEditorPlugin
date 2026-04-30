@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
-#include <queue>
 
 using namespace Unigine;
 using namespace Unigine::Math;
@@ -19,10 +18,6 @@ namespace
 // triangles so pull/falloff stays under the intended top surface footprint.
 constexpr double kMinTerrainSurfaceNormalZ = 0.7;
 
-// The raster seed is restricted to top-facing mesh triangles. Falloff is then
-// allowed to expand outward from that top footprint so it can create terrain
-// slopes instead of only painting a hard flat shape.
-constexpr bool kRestrictFalloffToMeshFootprint = false;
 }
 
 void SurfaceRasterizer::RasterBuffer::reset(const ivec2& resolutionValue)
@@ -46,14 +41,23 @@ bool SurfaceRasterizer::buildSurfaceQuery(const std::string& pattern, SurfaceQue
         return false;
     }
 
+    // Only treat as regex when the pattern contains at least one regex metacharacter.
+    // Plain names (e.g. "road_surface") are matched exactly via findSurface() without
+    // compiling a regex, avoiding false regex interpretations of names like "mesh.001".
+    static constexpr const char* kRegexMetaChars = R"(\.^$*+?{}[]|()\)";
+    const bool hasMetaChars = pattern.find_first_of(kRegexMetaChars) != std::string::npos;
+    if (!hasMetaChars)
+        return true; // exact-match only, useRegex stays false
+
     try
     {
         outQuery.regex = std::regex(pattern);
         outQuery.useRegex = true;
     }
-    catch (const std::regex_error&)
+    catch (const std::regex_error& e)
     {
-        outQuery.useRegex = false;
+        errorMessage = std::string("Invalid regex pattern '") + pattern + "': " + e.what();
+        return false;
     }
 
     return true;
@@ -97,85 +101,6 @@ std::vector<NodePtr> SurfaceRasterizer::collectMeshNodesRecursive(const std::vec
         NodeTreeWalker::collectMeshNodesRecursive(root, collectedNodes, visitedNodeIds, collectedMeshIds);
 
     return collectedNodes;
-}
-
-bool SurfaceRasterizer::extractSurfaceVerticesWorldSpace(const ObjectMeshStaticPtr& mesh,
-                                                         int surfaceId,
-                                                         std::vector<vec3>& outVertices)
-{
-    outVertices.clear();
-    if (!mesh || surfaceId < 0)
-        return false;
-
-    MeshStaticPtr meshStatic = mesh->getMeshForce();
-    if (!meshStatic)
-        return false;
-
-    const dmat4 worldTransform = mesh->getWorldTransform();
-    const int vertexCount = meshStatic->getNumVertices(surfaceId);
-    outVertices.reserve(vertexCount);
-
-    for (int vertexIndex = 0; vertexIndex < vertexCount; ++vertexIndex)
-    {
-        const vec3 meshVertex = meshStatic->getVertex(vertexIndex, surfaceId);
-        const dvec3 worldVertex = worldTransform * dvec3(meshVertex.x, meshVertex.y, meshVertex.z);
-        outVertices.emplace_back(static_cast<float>(worldVertex.x),
-                                  static_cast<float>(worldVertex.y),
-                                  static_cast<float>(worldVertex.z));
-    }
-
-    return !outVertices.empty();
-}
-
-void SurfaceRasterizer::buildMidpointPath(const std::vector<vec3>& surfaceVertices,
-                                          std::vector<vec3>& outMidpoints)
-{
-    outMidpoints.clear();
-    if (surfaceVertices.size() < 2)
-        return;
-
-    outMidpoints.reserve(surfaceVertices.size() / 2);
-    for (size_t index = 0; index + 1 < surfaceVertices.size(); index += 2)
-    {
-        const vec3& p1 = surfaceVertices[index];
-        const vec3& p2 = surfaceVertices[index + 1];
-        outMidpoints.emplace_back((p1.x + p2.x) * 0.5f,
-                                   (p1.y + p2.y) * 0.5f,
-                                   (p1.z + p2.z) * 0.5f);
-    }
-}
-
-void SurfaceRasterizer::samplePolyline(const std::vector<vec3>& points,
-                                       double spacing,
-                                       std::vector<vec3>& outSamples)
-{
-    outSamples.clear();
-    if (points.empty())
-        return;
-
-    if (points.size() == 1 || spacing <= kEpsilon)
-    {
-        outSamples = points;
-        return;
-    }
-
-    outSamples.reserve(points.size() * 4);
-    for (size_t pointIndex = 0; pointIndex + 1 < points.size(); ++pointIndex)
-    {
-        const vec3& start = points[pointIndex];
-        const vec3& end = points[pointIndex + 1];
-        const double distanceValue = distance(start, end);
-
-        outSamples.push_back(start);
-        if (distanceValue < Consts::EPS_D)
-            continue;
-
-        const double deltaT = spacing / distanceValue;
-        for (double t = deltaT; t < 1.0; t += deltaT)
-            outSamples.emplace_back(lerp(start, end, static_cast<float>(t)));
-    }
-
-    outSamples.push_back(points.back());
 }
 
 bool SurfaceRasterizer::rasterizeSurfaceHeight(const LandscapeLayerMapPtr& terrainTile,
@@ -233,8 +158,6 @@ bool SurfaceRasterizer::rasterizeSurfaceHeight(const LandscapeLayerMapPtr& terra
             for (int y = minY; y <= maxY; ++y)
             {
                 const int pixelIndex = toIndex(x, y, resolution.x);
-                if (outBuffer.sourceIndex[pixelIndex] >= 0)
-                    continue;
 
                 double baryU = 0.0;
                 double baryV = 0.0;
@@ -248,7 +171,18 @@ bool SurfaceRasterizer::rasterizeSurfaceHeight(const LandscapeLayerMapPtr& terra
 
                 // Convert tile-local height back to world space for terrain heightmap
                 const dvec3 worldPointD = terrainTile->getWorldTransform() * dvec3(point.x, point.y, point.z);
-                outBuffer.values[pixelIndex] = static_cast<float>(worldPointD.z);
+                const float worldZ = static_cast<float>(worldPointD.z);
+
+                // Keep the highest Z when multiple triangles cover the same pixel
+                // (handles concave surfaces and overlapping geometry correctly).
+                if (outBuffer.sourceIndex[pixelIndex] >= 0)
+                {
+                    if (worldZ > outBuffer.values[pixelIndex])
+                        outBuffer.values[pixelIndex] = worldZ;
+                    continue;
+                }
+
+                outBuffer.values[pixelIndex] = worldZ;
                 outBuffer.alpha[pixelIndex] = 1.0f;
                 outBuffer.sourceIndex[pixelIndex] = pixelIndex;
                 outBuffer.seeds.push_back(pixelIndex);
@@ -332,13 +266,6 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
     const int width = resolution.x;
     const int height = resolution.y;
     const int pixelCount = width * height;
-    std::vector<unsigned char> sourceCoverage(pixelCount, 0);
-    for (int i = 0; i < pixelCount; ++i)
-    {
-        if (buffer.sourceIndex[i] >= 0 && buffer.alpha[i] > 0.0f)
-            sourceCoverage[i] = 1;
-    }
-
     std::vector<int> dist(pixelCount, kInfDistance);
     std::vector<int> nearestSeed(pixelCount, -1);
 
@@ -432,17 +359,6 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
         }
     }
 
-    if (kRestrictFalloffToMeshFootprint)
-    {
-        for (int i = 0; i < pixelCount; ++i)
-        {
-            if (sourceCoverage[i])
-                continue;
-
-            buffer.alpha[i] = 0.0f;
-            buffer.sourceIndex[i] = -1;
-        }
-    }
 }
 
 void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapPtr& terrainTile,
@@ -762,11 +678,6 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer, const Ra
 int SurfaceRasterizer::toIndex(int x, int y, int width)
 {
     return x + (width * y);
-}
-
-int SurfaceRasterizer::toImageY(int y, int height)
-{
-    return height - 1 - y;
 }
 
 bool SurfaceRasterizer::pointInTriangle(const Vec3& point,

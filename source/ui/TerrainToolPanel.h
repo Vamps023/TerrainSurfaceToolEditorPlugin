@@ -43,6 +43,7 @@ private slots:
     void onRefreshLandscapeTiles();
     void refreshSurfaceOptions();
     void checkSelectionChanged();
+    void updateProgressBar();
 
 private:
     void setupUi();
@@ -51,6 +52,7 @@ private:
     void refreshLandscapeTileOptions(bool preserveSelection = true);
     int currentLandscapeTileId() const;
 
+    UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin = nullptr;
     std::unique_ptr<TerrainToolController> controller;
 
     QComboBox* comboSurfaceName = nullptr;
@@ -65,4 +67,5 @@ private:
     QProgressBar* progressBar = nullptr;
     QTextEdit* statusText = nullptr;
     QTimer* selectionCheckTimer = nullptr;
+    int operationCountAtStart = 0;
 };

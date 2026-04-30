@@ -7,7 +7,6 @@
 #include <UnigineEvent.h>
 #include <UnigineImage.h>
 #include <UnigineMaterials.h>
-#include <UnigineMesh.h>
 #include <UnigineObjects.h>
 
 #include <functional>
@@ -110,37 +109,17 @@ private:
     static constexpr const char* kDebugRasterOutputDir = "C:/Temp";
     // Number of landscape mask texture pages (each page holds 4 RGBA channels).
     static constexpr int kLandscapeMaskPageCount = 5;
-    // Highest valid logical mask index (5 pages x 4 channels - 1 = 19).
-    static constexpr int kMaxLandscapeMaskIndex = 19;
+    // kMaxLandscapeMaskIndex is defined in TerrainBrushSettings.h (shared constant).
     // Unigine reserves the first 2 bits of the data-mask word for height data
     // (bit 0 = height, bit 1 = opacity-height). Landscape mask channels start at bit 2.
     static constexpr int kMaskDataBitOffset = 2;
 
     bool beginActionTransaction();
     void finishActionScheduling();
-    void EndTransactionsIfIdle();
+    void endTransactionsIfIdle();
 
     static TerrainContext buildTerrainContext(const Unigine::ObjectLandscapeTerrainPtr& terrain,
                                              const Unigine::LandscapeLayerMapPtr& targetTile);
-    static bool terrainAvailable(TerrainContext& context, const Unigine::Math::dvec2& position);
-    static Unigine::LandscapeLayerMapPtr findContainingLayerMap(const TerrainContext& context,
-                                                                const Unigine::Math::dvec3& position);
-
-    void raiseTerrainAtPoint(const TerrainContext& context,
-                             const Unigine::Math::dvec3& point,
-                             const Unigine::Math::dvec2& brushSize,
-                             const Unigine::MaterialPtr& brushMaterial,
-                             float brushRotation,
-                             bool targetAlbedo = false,
-                             Unigine::LandscapeLayerMapPtr forcedTile = nullptr);
-
-    static void calculateDrawingRegion(const Unigine::Math::dvec3& brushLocalPosition,
-                                       const Unigine::Math::quat& brushLocalRotation,
-                                       const Unigine::Math::dvec2& halfSize,
-                                       const Unigine::LandscapeLayerMapPtr& tile,
-                                       Unigine::Math::ivec2& outCoord,
-                                       Unigine::Math::ivec2& outSize);
-
     bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile,
                           const Unigine::ImagePtr& heightImage,
                           const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
@@ -150,6 +129,7 @@ private:
                         int maskIndex,
                         const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
     bool applyHeightOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
+                              const Unigine::MaterialPtr& brushMaterial,
                               const Unigine::TexturePtr& heightTexture,
                               const Unigine::TexturePtr& alphaTexture);
     bool applyAlbedoOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
@@ -188,9 +168,9 @@ private:
                        const Unigine::Math::ivec2& coord,
                        int dataMask);
 
+    static Unigine::ImagePtr createSolidHeightImage(const Unigine::Math::ivec2& resolution, float height);
     static Unigine::MaterialPtr loadInheritedMaterial(const char* materialPath, const char* logContext);
     static void clearBrushMaterialTextures(const Unigine::MaterialPtr& brushMaterial);
-    static Unigine::MaterialPtr createCircularBrush(double falloffRatio, double padding = 0.0);
     static Unigine::MaterialPtr createMaskBrush(const Unigine::ImagePtr& maskImage);
     static int getMaskFileDataFlags(int maskIndex);
 

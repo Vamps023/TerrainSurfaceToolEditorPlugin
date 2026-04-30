@@ -72,5 +72,5 @@ private:
                                   const std::string& surfaceName) const;
 
     UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin = nullptr;
-    QSet<int> previousSelectionIds;
+    QSet<QString> previousSelectionIds;
 };

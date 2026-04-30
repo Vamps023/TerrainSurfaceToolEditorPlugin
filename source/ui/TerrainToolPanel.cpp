@@ -1,6 +1,8 @@
 #include "TerrainToolPanel.h"
 
 #include "TerrainToolController.h"
+#include "../core/TerrainSurfaceToolEditorPlugin.h"
+#include "../terrain/TerrainManipulator.h"
 
 #include <QtGui/QPalette>
 #include <QApplication>
@@ -12,13 +14,10 @@
 
 using namespace Unigine;
 
-namespace
-{
-constexpr int kMaxLandscapeMaskIndex = 19;
-}
 
 TerrainToolPanel::TerrainToolPanel(UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin)
     : QWidget()
+    , plugin(plugin)
     , controller(std::make_unique<TerrainToolController>(plugin))
 {
     setupUi();
@@ -166,6 +165,7 @@ void TerrainToolPanel::setupUi()
     selectionCheckTimer = new QTimer(this);
     selectionCheckTimer->setInterval(500);
     connect(selectionCheckTimer, &QTimer::timeout, this, &TerrainToolPanel::checkSelectionChanged);
+    connect(selectionCheckTimer, &QTimer::timeout, this, &TerrainToolPanel::updateProgressBar);
     selectionCheckTimer->start();
 }
 
@@ -212,6 +212,27 @@ void TerrainToolPanel::checkSelectionChanged()
 
     if (controller->hasSelectionChanged())
         refreshSurfaceOptions();
+}
+
+void TerrainToolPanel::updateProgressBar()
+{
+    if (!plugin || !plugin->manipulator() || !progressBar)
+        return;
+
+    const TerrainManipulator* manip = plugin->manipulator();
+    if (!manip->isBusy())
+    {
+        progressBar->setValue(100);
+        return;
+    }
+
+    if (operationCountAtStart <= 0)
+        return;
+
+    const int remaining = static_cast<int>(manip->pendingOperationCount());
+    const int done = operationCountAtStart - remaining;
+    const int percent = static_cast<int>(done * 100.0f / operationCountAtStart);
+    progressBar->setValue(qBound(0, percent, 99)); // stay < 100 until fully done
 }
 
 void TerrainToolPanel::appendLog(const QString& message)
@@ -290,13 +311,20 @@ void TerrainToolPanel::onApplyPullTerrain()
     if (!result.error.isEmpty())
     {
         appendLog(result.error);
+        progressBar->setValue(0);
         return;
     }
     appendLog(QString("Found %1 mesh node(s)").arg(result.selectedMeshCount));
-    progressBar->setValue(10);
-
-    progressBar->setValue(100);
-    appendLog(result.queued ? "=== Pull Terrain Complete ===" : "=== Pull Terrain Complete (No Changes) ===");
+    if (result.queued && plugin && plugin->manipulator())
+    {
+        operationCountAtStart = static_cast<int>(plugin->manipulator()->pendingOperationCount());
+        progressBar->setValue(0);
+    }
+    else
+    {
+        progressBar->setValue(100);
+    }
+    appendLog(result.queued ? "=== Pull Terrain queued — watch progress bar ===" : "=== Pull Terrain Complete (No Changes) ===");
 }
 
 void TerrainToolPanel::onApplyToMask()
@@ -327,13 +355,20 @@ void TerrainToolPanel::onApplyToMask()
     if (!result.error.isEmpty())
     {
         appendLog(result.error);
+        progressBar->setValue(0);
         return;
     }
     appendLog(QString("Found %1 mesh node(s)").arg(result.selectedMeshCount));
-    progressBar->setValue(10);
-
-    progressBar->setValue(100);
-    appendLog(result.queued ? "=== Apply to Landscape Mask Complete ==="
+    if (result.queued && plugin && plugin->manipulator())
+    {
+        operationCountAtStart = static_cast<int>(plugin->manipulator()->pendingOperationCount());
+        progressBar->setValue(0);
+    }
+    else
+    {
+        progressBar->setValue(100);
+    }
+    appendLog(result.queued ? "=== Apply to Mask queued — watch progress bar ==="
                             : "=== Apply to Landscape Mask Complete (No Changes) ===");
 }
 
@@ -343,7 +378,6 @@ void TerrainToolPanel::onPaintCompleteWhite()
     appendLog("=== Paint Complete White Height ===");
     progressBar->setValue(0);
 
-    progressBar->setValue(10);
     const TerrainBrushSettings settings = currentSettings();
     const TerrainToolController::ApplyResult result = controller->paintWhiteHeight(
         currentLandscapeTileId(),
@@ -359,7 +393,14 @@ void TerrainToolPanel::onPaintCompleteWhite()
     }
 
     appendLog("Erasing selected terrain tile heightmap data.");
-    progressBar->setValue(50);
-    progressBar->setValue(100);
-    appendLog(result.queued ? "=== Paint White Complete ===" : "=== Paint White Complete (No Changes) ===");
+    if (result.queued && plugin && plugin->manipulator())
+    {
+        operationCountAtStart = static_cast<int>(plugin->manipulator()->pendingOperationCount());
+        progressBar->setValue(0);
+    }
+    else
+    {
+        progressBar->setValue(100);
+    }
+    appendLog(result.queued ? "=== Paint White queued — watch progress bar ===" : "=== Paint White Complete (No Changes) ===");
 }
