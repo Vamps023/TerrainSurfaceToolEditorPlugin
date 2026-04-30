@@ -50,6 +50,7 @@ private:
     void appendLog(const QString& message);
     TerrainBrushSettings currentSettings() const;
     void refreshLandscapeTileOptions(bool preserveSelection = true);
+    void refreshMaskOptions();
     int currentLandscapeTileId() const;
 
     UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin = nullptr;

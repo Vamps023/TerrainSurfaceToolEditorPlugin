@@ -59,6 +59,44 @@ bool TerrainToolController::hasSelectionChanged()
     return true;
 }
 
+QStringList TerrainToolController::maskSlotLabels() const
+{
+    static constexpr const char* kChannels = "RGBA";
+    QStringList labels;
+
+    // Try to get the active terrain so we can read user-defined mask names.
+    const auto terrains = plugin ? plugin->getLandscapeTerrains() : std::vector<ObjectLandscapeTerrainPtr>();
+    const ObjectLandscapeTerrainPtr terrain = !terrains.empty()
+        ? terrains.front()
+        : Landscape::getActiveTerrain();
+
+    for (int maskIndex = 0; maskIndex <= kMaxLandscapeMaskIndex; ++maskIndex)
+    {
+        const int maskPage = maskIndex / 4;
+        const QChar channel(kChannels[maskIndex % 4]);
+        const QString techSuffix = QString("(mask_%1 / %2)").arg(maskPage).arg(channel);
+
+        QString displayName;
+        if (terrain)
+        {
+            const auto detailMask = terrain->getDetailMask(maskIndex);
+            if (detailMask)
+            {
+                const char* name = detailMask->getName();
+                if (name && name[0] != '\0')
+                    displayName = QString::fromUtf8(name);
+            }
+        }
+
+        if (displayName.isEmpty())
+            displayName = QString("Mask %1").arg(maskIndex);
+
+        labels.append(QString("%1  %2").arg(displayName, techSuffix));
+    }
+
+    return labels;
+}
+
 QVector<TerrainToolController::TileOption> TerrainToolController::landscapeTileOptions() const
 {
     QVector<TileOption> options;

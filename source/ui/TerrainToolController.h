@@ -40,6 +40,7 @@ public:
 
     QStringList selectedSurfaceNames() const;
     QVector<TileOption> landscapeTileOptions() const;
+    QStringList maskSlotLabels() const;
 
     // Returns true if the set of selected mesh surface names changed since the last call.
     // Internally tracks the previous selection so the panel does not need to.

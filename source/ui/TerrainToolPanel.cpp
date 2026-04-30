@@ -87,14 +87,7 @@ void TerrainToolPanel::setupUi()
     comboMaskName->setToolTip(
         "Select the logical landscape mask.\n"
         "Mask 0-3 belong to mask_0 (R/G/B/A), mask 4-7 belong to mask_1, and so on.");
-    for (int maskIndex = 0; maskIndex <= kMaxLandscapeMaskIndex; ++maskIndex)
-    {
-        const int maskPage = maskIndex / 4;
-        const QChar channel("RGBA"[maskIndex % 4]);
-        comboMaskName->addItem(
-            QString("Mask %1  (mask_%2 / %3)").arg(maskIndex).arg(maskPage).arg(channel),
-            maskIndex);
-    }
+    refreshMaskOptions();
     maskLayout->addWidget(comboMaskName);
     mainLayout->addWidget(maskGroup);
 
@@ -173,6 +166,7 @@ void TerrainToolPanel::showEvent(QShowEvent* event)
 {
     refreshLandscapeTileOptions(true);
     refreshSurfaceOptions();
+    refreshMaskOptions();
     QWidget::showEvent(event);
 }
 
@@ -180,7 +174,28 @@ void TerrainToolPanel::onRefreshLandscapeTiles()
 {
     refreshLandscapeTileOptions(true);
     refreshSurfaceOptions();
+    refreshMaskOptions();
     appendLog("Landscape tiles and surface list refreshed.");
+}
+
+void TerrainToolPanel::refreshMaskOptions()
+{
+    if (!comboMaskName || !controller)
+        return;
+
+    const int previousIndex = comboMaskName->currentIndex();
+    comboMaskName->blockSignals(true);
+    comboMaskName->clear();
+
+    const QStringList labels = controller->maskSlotLabels();
+    for (int maskIndex = 0; maskIndex < labels.size(); ++maskIndex)
+        comboMaskName->addItem(labels[maskIndex], maskIndex);
+
+    // Restore previous selection if still valid, otherwise keep index 0.
+    if (previousIndex >= 0 && previousIndex < comboMaskName->count())
+        comboMaskName->setCurrentIndex(previousIndex);
+
+    comboMaskName->blockSignals(false);
 }
 
 void TerrainToolPanel::refreshSurfaceOptions()
