@@ -6,8 +6,6 @@
 #include <QApplication>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QSet>
-#include <QList>
 #include <QStyle>
 #include <QTimer>
 #include <algorithm>
@@ -212,16 +210,8 @@ void TerrainToolPanel::checkSelectionChanged()
     if (!controller)
         return;
 
-    const QStringList selectedNames = controller->selectedSurfaceNames();
-    QSet<int> currentSelectionIds;
-    for (const QString& name : selectedNames)
-        currentSelectionIds.insert(qHash(name));
-
-    if (currentSelectionIds != previousSelectionIds)
-    {
-        previousSelectionIds = currentSelectionIds;
+    if (controller->hasSelectionChanged())
         refreshSurfaceOptions();
-    }
 }
 
 void TerrainToolPanel::appendLog(const QString& message)

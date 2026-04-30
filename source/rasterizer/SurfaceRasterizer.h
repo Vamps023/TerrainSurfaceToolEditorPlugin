@@ -12,59 +12,92 @@
 #include <unordered_set>
 #include <vector>
 
+// Pair of (Object, surface index) that identifies a single mesh surface.
 using ObjectSurface = std::pair<Unigine::ObjectPtr, int>;
 
+// Utility class that converts mesh surfaces into per-tile raster buffers
+// (heightmap or mask) and applies distance-based falloff blending.
 class SurfaceRasterizer
 {
 public:
+    // Compiled surface-name filter: supports exact name matching and regex.
     struct SurfaceQuery
     {
-        std::string raw;
-        bool useRegex = false;
-        std::regex regex;
+        std::string raw;       // original pattern string
+        bool useRegex = false; // true when pattern compiled as regex
+        std::regex regex;      // compiled regex (valid only when useRegex == true)
     };
 
+    // Per-tile CPU raster buffer storing world-space heights and blend alphas
+    // for every pixel of a LandscapeLayerMap tile.
     struct RasterBuffer
     {
         Unigine::Math::ivec2 resolution = Unigine::Math::ivec2_zero;
-        std::vector<float> values;
-        std::vector<float> alpha;
-        std::vector<int> sourceIndex;
-        std::vector<int> seeds;
+        std::vector<float> values;      // world-space height per pixel
+        std::vector<float> alpha;       // blend opacity [0..1] per pixel
+        std::vector<int> sourceIndex;   // nearest rasterised seed index (-1 = untouched)
+        std::vector<int> seeds;         // pixel indices directly covered by mesh triangles
 
+        // Resets all arrays to match the given tile resolution.
         void reset(const Unigine::Math::ivec2& resolutionValue);
+        // Returns true when no mesh triangles have been rasterised yet.
         bool empty() const { return seeds.empty(); }
     };
 
+    // Axis-aligned sub-rectangle of a tile that was actually modified,
+    // used to issue minimal asyncTextureDraw calls.
     struct RasterRegion
     {
-        Unigine::Math::ivec2 coord = Unigine::Math::ivec2_zero;
-        Unigine::Math::ivec2 size = Unigine::Math::ivec2_zero;
+        Unigine::Math::ivec2 coord = Unigine::Math::ivec2_zero; // top-left pixel
+        Unigine::Math::ivec2 size = Unigine::Math::ivec2_zero;  // width/height in pixels
 
         bool valid() const { return size.x > 0 && size.y > 0; }
     };
 
+    // Compiles a raw pattern string into a SurfaceQuery (exact or regex).
+    // Returns false and fills errorMessage on failure.
     static bool buildSurfaceQuery(const std::string& pattern, SurfaceQuery& outQuery, std::string& errorMessage);
+
+    // Returns the indices of all surfaces on mesh whose name matches query.
     static std::vector<int> findMatchingSurfaceIds(const Unigine::ObjectMeshStaticPtr& mesh, const SurfaceQuery& query);
+
+    // Recursively collects all ObjectMeshStatic nodes under roots.
     static std::vector<Unigine::NodePtr> collectMeshNodesRecursive(const std::vector<Unigine::NodePtr>& roots);
 
+    // Extracts all vertex positions of surfaceId in world space.
     static bool extractSurfaceVerticesWorldSpace(const Unigine::ObjectMeshStaticPtr& mesh,
                                                  int surfaceId,
                                                  std::vector<Unigine::Math::vec3>& outVertices);
+
+    // Builds a list of edge midpoints from a list of surface vertices.
     static void buildMidpointPath(const std::vector<Unigine::Math::vec3>& surfaceVertices,
                                   std::vector<Unigine::Math::vec3>& outMidpoints);
+
+    // Resamples a polyline at uniform spacing, inserting intermediate points.
     static void samplePolyline(const std::vector<Unigine::Math::vec3>& points,
                                double spacing,
                                std::vector<Unigine::Math::vec3>& outSamples);
 
+    // Rasterizes the triangles of objectSurface into outBuffer as world-space heights.
+    // Only up-facing triangles (normal.z >= kMinTerrainSurfaceNormalZ) are written.
+    // Returns true if at least one pixel was written.
     static bool rasterizeSurfaceHeight(const Unigine::LandscapeLayerMapPtr& terrainTile,
                                        const ObjectSurface& objectSurface,
                                        RasterBuffer& outBuffer);
+
+    // Rasterizes the footprint of objectSurface as a binary mask (value = 1 for covered pixels).
+    // Returns true if at least one pixel was written.
     static bool rasterizeSurfaceMask(const Unigine::LandscapeLayerMapPtr& terrainTile,
                                      const ObjectSurface& objectSurface,
                                      RasterBuffer& outBuffer);
+
+    // Merges source pixels (alpha > 0) into target, overwriting existing data.
+    // Returns true if any pixel was merged.
     static bool mergeRasterBuffer(RasterBuffer& target, const RasterBuffer& source);
 
+    // Expands the rasterized footprint outward using a Chamfer 3-4 distance transform.
+    // Pixels within flatDistance keep alpha=1; pixels in the falloff band get a
+    // smoothstep-blended alpha that fades to 0 at flatDistance + falloffDistance.
     static void applyDistanceFalloff(const Unigine::LandscapeLayerMapPtr& terrainTile,
                                      RasterBuffer& buffer,
                                      double flatDistance,
@@ -86,10 +119,15 @@ public:
                                                const Unigine::LandscapeFetchPtr& fetch,
                                                RasterBuffer& buffer);
 
+    // Creates a full-tile RGBA32F image from buffer (R=height, A=alpha).
     static Unigine::ImagePtr createHeightImage(const RasterBuffer& buffer);
+    // Creates a full-tile RGBA32F image with all channels = source alpha (used as opacity mask).
     static Unigine::ImagePtr createHeightAlphaImage(const Unigine::ImagePtr& heightImage);
+    // Creates a full-tile R8 image from buffer alpha values (used for landscape mask).
     static Unigine::ImagePtr createMaskImage(const RasterBuffer& buffer);
+    // Returns the bounding rectangle of all pixels with alpha > 0.
     static RasterRegion calculateTouchedRegion(const RasterBuffer& buffer);
+    // Region-cropped variants of the above — only generate an image for the touched sub-rect.
     static Unigine::ImagePtr createHeightImage(const RasterBuffer& buffer, const RasterRegion& region);
     static Unigine::ImagePtr createHeightAlphaImage(const Unigine::ImagePtr& heightImage, const RasterRegion& region);
     static Unigine::ImagePtr createMaskImage(const RasterBuffer& buffer, const RasterRegion& region);

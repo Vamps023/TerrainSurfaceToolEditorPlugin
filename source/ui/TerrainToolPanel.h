@@ -9,7 +9,6 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollBar>
-#include <QSet>
 #include <QShowEvent>
 #include <QTextEdit>
 #include <QTimer>
@@ -66,5 +65,4 @@ private:
     QProgressBar* progressBar = nullptr;
     QTextEdit* statusText = nullptr;
     QTimer* selectionCheckTimer = nullptr;
-    QSet<int> previousSelectionIds;
 };

@@ -2,6 +2,7 @@
 
 #include "../terrain/TerrainBrushSettings.h"
 
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -40,6 +41,10 @@ public:
     QStringList selectedSurfaceNames() const;
     QVector<TileOption> landscapeTileOptions() const;
 
+    // Returns true if the set of selected mesh surface names changed since the last call.
+    // Internally tracks the previous selection so the panel does not need to.
+    bool hasSelectionChanged();
+
     ApplyResult pullTerrainToSurface(int targetTileId,
                                      const std::string& surfaceName,
                                      const TerrainBrushSettings& settings,
@@ -67,4 +72,5 @@ private:
                                   const std::string& surfaceName) const;
 
     UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin = nullptr;
+    QSet<int> previousSelectionIds;
 };

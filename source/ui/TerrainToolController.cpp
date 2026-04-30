@@ -46,6 +46,20 @@ QStringList TerrainToolController::selectedSurfaceNames() const
     return result;
 }
 
+bool TerrainToolController::hasSelectionChanged()
+{
+    const QStringList currentNames = selectedSurfaceNames();
+    QSet<int> currentIds;
+    for (const QString& name : currentNames)
+        currentIds.insert(qHash(name));
+
+    if (currentIds == previousSelectionIds)
+        return false;
+
+    previousSelectionIds = currentIds;
+    return true;
+}
+
 QVector<TerrainToolController::TileOption> TerrainToolController::landscapeTileOptions() const
 {
     QVector<TileOption> options;

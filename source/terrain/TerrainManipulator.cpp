@@ -159,19 +159,12 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
 
     beginActionTransaction();
     bool queuedAnyOperation = false;
-    const double maskFlatDistance = effectiveFlatDistance(settings);
 
     const std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
         TerrainRasterPlanner::buildMaskPlans(nodes, terrainContext.layerMaps, query);
     for (auto plan : plans)
     {
-        SurfaceRasterizer::applyDistanceFalloff(plan.tile,
-                                                plan.rasterBuffer,
-                                                maskFlatDistance,
-                                                settings.falloffDistance);
-        const SurfaceRasterizer::RasterRegion region = SurfaceRasterizer::calculateTouchedRegion(plan.rasterBuffer);
-        const ImagePtr maskImage = SurfaceRasterizer::createMaskImage(plan.rasterBuffer, region);
-        if (maskImage && setTerrainMask(plan.tile, maskImage, settings, maskIndex, region))
+        if (queueMaskRasterForTile(plan.tile, plan.rasterBuffer, settings, maskIndex, log))
         {
             logMessage(log, "  Tile '" + std::string(plan.tile->getName()) + "': rasterized "
                             + std::to_string(plan.mergedSurfaceCount) + " selected surface(s) into one mask operation.");
@@ -384,7 +377,10 @@ bool TerrainManipulator::queueHeightRasterForTile(const TerrainContext& terrainC
                                                   const LogFn& log)
 {
     if (rasterBuffer.empty())
+    {
+        logMessage(log, "WARNING: Raster buffer is empty for tile '" + std::string(tile ? tile->getName() : "null") + "' — no mesh triangles were rasterized.");
         return false;
+    }
 
     SurfaceRasterizer::applyDistanceFalloff(tile,
                                             rasterBuffer,
@@ -403,10 +399,39 @@ bool TerrainManipulator::queueHeightRasterForTile(const TerrainContext& terrainC
     const SurfaceRasterizer::RasterRegion region = SurfaceRasterizer::calculateTouchedRegion(rasterBuffer);
     const ImagePtr heightImage = SurfaceRasterizer::createHeightImage(rasterBuffer, region);
     if (!heightImage)
+    {
+        logMessage(log, "ERROR: Failed to create height image for tile '" + std::string(tile ? tile->getName() : "null") + "'.");
         return false;
+    }
 
     saveDebugRasterImages(tile, rasterBuffer, log);
     return setTerrainHeight(tile, heightImage, region);
+}
+
+bool TerrainManipulator::queueMaskRasterForTile(const LandscapeLayerMapPtr& tile,
+                                                SurfaceRasterizer::RasterBuffer& rasterBuffer,
+                                                const TerrainBrushSettings& settings,
+                                                int maskIndex,
+                                                const LogFn& log)
+{
+    if (rasterBuffer.empty())
+    {
+        logMessage(log, "WARNING: Raster buffer is empty for tile '" + std::string(tile ? tile->getName() : "null") + "' — no mesh triangles were rasterized.");
+        return false;
+    }
+
+    const double maskFlatDistance = effectiveFlatDistance(settings);
+    SurfaceRasterizer::applyDistanceFalloff(tile, rasterBuffer, maskFlatDistance, settings.falloffDistance);
+
+    const SurfaceRasterizer::RasterRegion region = SurfaceRasterizer::calculateTouchedRegion(rasterBuffer);
+    const ImagePtr maskImage = SurfaceRasterizer::createMaskImage(rasterBuffer, region);
+    if (!maskImage)
+    {
+        logMessage(log, "ERROR: Failed to create mask image for tile '" + std::string(tile ? tile->getName() : "null") + "'.");
+        return false;
+    }
+
+    return setTerrainMask(tile, maskImage, settings, maskIndex, region);
 }
 
 void TerrainManipulator::saveDebugRasterImages(const LandscapeLayerMapPtr& tile,
@@ -582,13 +607,19 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile,
                                           const SurfaceRasterizer::RasterRegion& region)
 {
     if (!tile || !heightImage)
+    {
+        Log::error("[TerrainManipulator] setTerrainHeight: null tile or height image.\n");
         return false;
+    }
 
     ImagePtr preparedImage = heightImage;
     if (preparedImage->getFormat() != Image::FORMAT_RGBA32F)
     {
         if (!preparedImage->convertToFormat(Image::FORMAT_RGBA32F))
+        {
+            Log::error("[TerrainManipulator] setTerrainHeight: failed to convert image to RGBA32F.\n");
             return false;
+        }
     }
 
     const ivec2 tileResolution = tile->getResolution();
@@ -598,14 +629,20 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile,
     if (preparedImage->getWidth() != drawSize.x || preparedImage->getHeight() != drawSize.y)
     {
         if (!preparedImage->resize(drawSize.x, drawSize.y))
+        {
+            Log::error("[TerrainManipulator] setTerrainHeight: failed to resize height image to %dx%d.\n", drawSize.x, drawSize.y);
             return false;
+        }
     }
 
     const ImagePtr alphaImage = useRegion
         ? SurfaceRasterizer::createHeightAlphaImage(preparedImage, region)
         : SurfaceRasterizer::createHeightAlphaImage(preparedImage);
     if (!alphaImage)
+    {
+        Log::error("[TerrainManipulator] setTerrainHeight: failed to create alpha image.\n");
         return false;
+    }
 
     BrushOperationData operation;
     operation.heightImage = preparedImage;
@@ -631,13 +668,19 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
                                         const SurfaceRasterizer::RasterRegion& region)
 {
     if (!tile || !maskImage)
+    {
+        Log::error("[TerrainManipulator] setTerrainMask: null tile or mask image.\n");
         return false;
+    }
 
     ImagePtr preparedImage = maskImage;
     if (preparedImage->getFormat() != Image::FORMAT_R8)
     {
         if (!preparedImage->convertToFormat(Image::FORMAT_R8))
+        {
+            Log::error("[TerrainManipulator] setTerrainMask: failed to convert image to R8.\n");
             return false;
+        }
     }
 
     const ivec2 tileResolution = tile->getResolution();
@@ -647,12 +690,18 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
     if (preparedImage->getWidth() != drawSize.x || preparedImage->getHeight() != drawSize.y)
     {
         if (!preparedImage->resize(drawSize.x, drawSize.y))
+        {
+            Log::error("[TerrainManipulator] setTerrainMask: failed to resize mask image to %dx%d.\n", drawSize.x, drawSize.y);
             return false;
+        }
     }
 
     const MaterialPtr brushMaterial = createMaskBrush(preparedImage);
     if (!brushMaterial)
+    {
+        Log::error("[TerrainManipulator] setTerrainMask: failed to create mask brush material.\n");
         return false;
+    }
 
     BrushOperationData operation;
     operation.brushMaterial = brushMaterial;
@@ -664,7 +713,10 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
 
     const int maskFlags = getMaskFileDataFlags(maskIndex);
     if (maskFlags == 0)
+    {
+        Log::error("[TerrainManipulator] setTerrainMask: invalid maskIndex %d — no file data flags.\n", maskIndex);
         return false;
+    }
 
     const int operationId = Landscape::generateOperationID();
     pendingOperations[operationId] = operation;
@@ -677,7 +729,10 @@ bool TerrainManipulator::applyHeightOverwrite(const LandscapeTexturesPtr& buffer
                                               const TexturePtr& alphaTexture)
 {
     if (!buffer || !heightTexture || !alphaTexture)
+    {
+        Log::error("[TerrainManipulator] applyHeightOverwrite: null buffer, height texture, or alpha texture.\n");
         return false;
+    }
 
     const MaterialPtr brushMaterial = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
                                                              "terrain height overwrite");
@@ -699,7 +754,10 @@ bool TerrainManipulator::applyAlbedoOverwrite(const LandscapeTexturesPtr& buffer
                                               const ImagePtr& albedoImage)
 {
     if (!buffer || !albedoImage)
+    {
+        Log::error("[TerrainManipulator] applyAlbedoOverwrite: null buffer or albedo image.\n");
         return false;
+    }
 
     const MaterialPtr brushMaterial = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
                                                              "terrain albedo overwrite");
@@ -708,7 +766,10 @@ bool TerrainManipulator::applyAlbedoOverwrite(const LandscapeTexturesPtr& buffer
 
     TexturePtr albedoTexture = Texture::create();
     if (!albedoTexture || !albedoTexture->create(albedoImage))
+    {
+        Log::error("[TerrainManipulator] applyAlbedoOverwrite: failed to create albedo texture from image.\n");
         return false;
+    }
 
     brushMaterial->setTexture("terrain_height", buffer->getAlbedo());
     brushMaterial->setTexture("new_height", albedoTexture);
@@ -723,7 +784,10 @@ bool TerrainManipulator::applyBrush(const BrushOperationData& operation,
                                     int dataMask)
 {
     if (!buffer || !operation.brushMaterial)
+    {
+        Log::error("[TerrainManipulator] applyBrush: null buffer or brush material.\n");
         return false;
+    }
 
     MaterialPtr brushMaterial = operation.brushMaterial;
     brushMaterial->setParameterFloat("size", operation.brushSize);
@@ -734,15 +798,36 @@ bool TerrainManipulator::applyBrush(const BrushOperationData& operation,
         return applyMaskBrush(operation, buffer);
 
     if (operation.modifyHeights)
-    {
-        brushMaterial->setTexture("terrain_height", buffer->getHeight());
-        brushMaterial->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
-        brushMaterial->setParameterFloat("height", operation.brushHeight);
-    }
+        return applyHeightBrushData(operation, buffer, dataMask);
 
     if (operation.modifyAlbedo)
-        brushMaterial->setTexture("terrain_albedo", buffer->getAlbedo());
+        return applyAlbedoBrushData(operation, buffer, dataMask);
 
+    Log::error("[TerrainManipulator] applyBrush: no modify flag set on operation.\n");
+    return false;
+}
+
+bool TerrainManipulator::applyHeightBrushData(const BrushOperationData& operation,
+                                              const LandscapeTexturesPtr& buffer,
+                                              int dataMask)
+{
+    MaterialPtr brushMaterial = operation.brushMaterial;
+    brushMaterial->setTexture("terrain_height", buffer->getHeight());
+    brushMaterial->setTexture("terrain_opacity_height", buffer->getOpacityHeight());
+    brushMaterial->setParameterFloat("height", operation.brushHeight);
+    brushMaterial->setParameterInt("data_mask", dataMask);
+    brushMaterial->setState("height_blend_mode", static_cast<int>(operation.heightBlendMode));
+    brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
+    clearBrushMaterialTextures(brushMaterial);
+    return true;
+}
+
+bool TerrainManipulator::applyAlbedoBrushData(const BrushOperationData& operation,
+                                              const LandscapeTexturesPtr& buffer,
+                                              int dataMask)
+{
+    MaterialPtr brushMaterial = operation.brushMaterial;
+    brushMaterial->setTexture("terrain_albedo", buffer->getAlbedo());
     brushMaterial->setParameterInt("data_mask", dataMask);
     brushMaterial->setState("height_blend_mode", static_cast<int>(operation.heightBlendMode));
     brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
@@ -754,7 +839,10 @@ bool TerrainManipulator::applyMaskBrush(const BrushOperationData& operation,
                                         const LandscapeTexturesPtr& buffer)
 {
     if (!buffer || !operation.brushMaterial)
+    {
+        Log::error("[TerrainManipulator] applyMaskBrush: null buffer or brush material.\n");
         return false;
+    }
 
     MaterialPtr brushMaterial = operation.brushMaterial;
     int availablePages = 0;
@@ -764,7 +852,10 @@ bool TerrainManipulator::applyMaskBrush(const BrushOperationData& operation,
             ++availablePages;
     }
     if (availablePages == 0)
+    {
+        Log::error("[TerrainManipulator] applyMaskBrush: no mask pages available in landscape buffer.\n");
         return false;
+    }
 
     for (int pageIndex = 0; pageIndex < kLandscapeMaskPageCount; ++pageIndex)
     {

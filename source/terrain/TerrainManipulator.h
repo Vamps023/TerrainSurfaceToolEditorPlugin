@@ -15,14 +15,21 @@
 #include <unordered_map>
 #include <vector>
 
+// Orchestrates the full pipeline from mesh-surface rasterization through
+// CPU falloff/blend to Landscape::asyncTextureDraw brush dispatch.
+// All heavy operations are asynchronous; use isBusy() to poll completion.
 class TerrainManipulator
 {
 public:
     using LogFn = std::function<void(const std::string&)>;
 
+    // Constructs a TerrainManipulator instance, associating it with the given LandscapeSaveManager.
     explicit TerrainManipulator(LandscapeSaveManager& saveManager);
     ~TerrainManipulator();
 
+    // Rasterizes mesh surfaces matching surfacePattern onto the terrain heightmap.
+    // Applies flat-distance padding and falloff blending before writing.
+    // Returns true if at least one tile operation was queued.
     bool pullTerrainToSurface(const std::vector<Unigine::NodePtr>& nodes,
                               const Unigine::ObjectLandscapeTerrainPtr& terrain,
                               const Unigine::LandscapeLayerMapPtr& targetTile,
@@ -30,6 +37,8 @@ public:
                               const TerrainBrushSettings& settings,
                               const LogFn& log);
 
+    // Rasterizes mesh surface footprint into the landscape mask channel maskIndex [0..19].
+    // Returns true if at least one tile mask operation was queued.
     bool applyLandscapeMask(const std::vector<Unigine::NodePtr>& nodes,
                             const Unigine::ObjectLandscapeTerrainPtr& terrain,
                             const Unigine::LandscapeLayerMapPtr& targetTile,
@@ -38,19 +47,26 @@ public:
                             int maskIndex,
                             const LogFn& log);
 
+    // Resets the heightmap to 0 for all tiles that intersect the given nodes.
+    // Returns true if at least one tile was modified.
     bool resetTerrainHeights(const std::vector<Unigine::NodePtr>& nodes,
                              const Unigine::ObjectLandscapeTerrainPtr& terrain,
                              const Unigine::LandscapeLayerMapPtr& targetTile,
                              const LogFn& log);
 
+    // Erases all heightmap data (sets height to 0) on all tiles of the terrain.
+    // Returns true if at least one tile was modified.
     bool paintWhiteHeight(const std::vector<Unigine::NodePtr>& nodes,
                           const Unigine::ObjectLandscapeTerrainPtr& terrain,
                           const Unigine::LandscapeLayerMapPtr& targetTile,
                           const TerrainBrushSettings& settings,
                           const LogFn& log);
 
+    // Returns true while async texture-draw operations are still in flight.
     bool isBusy() const;
+    // Returns the number of queued but not yet dispatched brush operations.
     size_t pendingOperationCount() const;
+    // Forces an immediate flush of all pending landscape saves.
     void flushPendingSaves();
 
 private:
@@ -86,11 +102,18 @@ private:
         Unigine::Math::ivec2 drawSize = Unigine::Math::ivec2_zero;
     };
 
+    // Set to true to enable verbose per-frame logging on hot paths.
     static constexpr bool kDebugHotPathLogs = false;
+    // Set to true to save debug height/alpha PNG images to kDebugRasterOutputDir.
     static constexpr bool kSaveDebugRasterImages = false;
+    // Directory used when kSaveDebugRasterImages is true.
     static constexpr const char* kDebugRasterOutputDir = "C:/Temp";
+    // Number of landscape mask texture pages (each page holds 4 RGBA channels).
     static constexpr int kLandscapeMaskPageCount = 5;
+    // Highest valid logical mask index (5 pages x 4 channels - 1 = 19).
     static constexpr int kMaxLandscapeMaskIndex = 19;
+    // Unigine reserves the first 2 bits of the data-mask word for height data
+    // (bit 0 = height, bit 1 = opacity-height). Landscape mask channels start at bit 2.
     static constexpr int kMaskDataBitOffset = 2;
 
     bool beginActionTransaction();
@@ -143,9 +166,22 @@ private:
                                   double falloffDistance,
                                   const TerrainBrushSettings& settings,
                                   const LogFn& log);
+    // Applies falloff + mask image creation for a single tile in applyLandscapeMask.
+    bool queueMaskRasterForTile(const Unigine::LandscapeLayerMapPtr& tile,
+                                SurfaceRasterizer::RasterBuffer& rasterBuffer,
+                                const TerrainBrushSettings& settings,
+                                int maskIndex,
+                                const LogFn& log);
     static void saveDebugRasterImages(const Unigine::LandscapeLayerMapPtr& tile,
                                       const SurfaceRasterizer::RasterBuffer& rasterBuffer,
                                       const LogFn& log);
+    // Sub-methods used by applyBrush to handle each modification mode.
+    bool applyHeightBrushData(const BrushOperationData& operation,
+                              const Unigine::LandscapeTexturesPtr& buffer,
+                              int dataMask);
+    bool applyAlbedoBrushData(const BrushOperationData& operation,
+                              const Unigine::LandscapeTexturesPtr& buffer,
+                              int dataMask);
 
     void onTextureDraw(const Unigine::UGUID& guid, int operationId,
                        const Unigine::LandscapeTexturesPtr& buffer,
