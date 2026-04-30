@@ -444,7 +444,9 @@ void SurfaceRasterizer::blendFalloffWithExistingTerrain(const LandscapeLayerMapP
             else
             {
                 // Fetch failed — no terrain data here (tile edge / outside terrain).
-                // Zero out alpha so the brush does NOT paint this pixel at all.
+                // Zero out both value and alpha: stale mesh height must not leak into
+                // the height texture for a pixel whose opacity will be 0.
+                buffer.values[i] = 0.0f;
                 buffer.alpha[i] = 0.0f;
                 ++fetchFailures;
             }
@@ -486,9 +488,11 @@ void SurfaceRasterizer::fillUnpaintedPixelsWithTerrain(const LandscapeLayerMapPt
             const Vec2 fxy(static_cast<float>(w.x), static_cast<float>(w.y));
 
             if (fetch->fetchForce(fxy))
+            {
                 buffer.values[i] = fetch->getHeight();
-            // alpha stays 0 — brush will write this height but with opacity=0
-            // so Unigine won't actually change the stored terrain height
+                buffer.alpha[i] = 1.0f; // write existing terrain back fully opaque so opacity_height is not zeroed
+            }
+            // alpha stays 0 only if fetch fails — brush skips writing opacity for this pixel
         }
     }
 }
