@@ -152,12 +152,17 @@ void TerrainSurfaceToolEditorPlugin::setupMenu()
         }
     }
 
+    if (!pluginMenu)
+    {
+        Log::error("[TerrainSurfaceTool] Failed to create menu action: pluginMenu is null\n");
+        return;
+    }
+
     terrainToolAction = new QAction("Terrain Surface Tool", pluginMenu);
     connect(terrainToolAction, &QAction::triggered,
             this, &TerrainSurfaceToolEditorPlugin::openTerrainTool);
 
-    if (pluginMenu)
-        pluginMenu->addAction(terrainToolAction);
+    pluginMenu->addAction(terrainToolAction);
 }
 
 void TerrainSurfaceToolEditorPlugin::openTerrainTool()

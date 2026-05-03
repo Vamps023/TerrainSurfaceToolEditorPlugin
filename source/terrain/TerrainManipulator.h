@@ -4,6 +4,8 @@
 #include "../landscape/LandscapeSaveManager.h"
 #include "../rasterizer/SurfaceRasterizer.h"
 
+#include <mutex>
+
 #include <UnigineEvent.h>
 #include <UnigineImage.h>
 #include <UnigineMaterials.h>
@@ -153,8 +155,9 @@ private:
     static Unigine::MaterialPtr createMaskBrush(const Unigine::ImagePtr& maskImage);
     static int getMaskFileDataFlags(int maskIndex);
 
-    LandscapeSaveManager& saveManager;
+        LandscapeSaveManager& saveManager;
     std::unordered_map<int, BrushOperationData> pendingOperations;
+    mutable std::mutex pendingOpsMutex;
 
     Unigine::EventConnection textureDrawConnection;
     int pendingTransactionCommits = 0;

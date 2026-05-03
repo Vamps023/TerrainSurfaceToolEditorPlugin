@@ -59,6 +59,16 @@ bool SurfaceRasterizer::buildSurfaceQuery(const std::string& pattern, SurfaceQue
         errorMessage = std::string("Invalid regex pattern '") + pattern + "': " + e.what();
         return false;
     }
+    catch (const std::exception& e)
+    {
+        errorMessage = std::string("Regex error for pattern '") + pattern + "': " + e.what();
+        return false;
+    }
+    catch (...)
+    {
+        errorMessage = std::string("Unknown regex error for pattern '") + pattern + "'";
+        return false;
+    }
 
     return true;
 }

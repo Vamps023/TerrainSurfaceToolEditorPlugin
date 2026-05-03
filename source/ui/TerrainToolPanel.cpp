@@ -251,7 +251,9 @@ void TerrainToolPanel::updateProgressBar()
 
     const int remaining = static_cast<int>(manip->pendingOperationCount());
     const int done = operationCountAtStart - remaining;
-    const int percent = static_cast<int>(done * 100.0f / operationCountAtStart);
+    const int percent = (operationCountAtStart > 0)
+                            ? static_cast<int>(done * 100.0f / operationCountAtStart)
+                            : 100;
     progressBar->setValue(qBound(0, percent, 99)); // stay < 100 until fully done
 }
 

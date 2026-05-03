@@ -87,9 +87,9 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
 
     bool queuedAnyOperation = false;
 
-    const std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
+    std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
         TerrainRasterPlanner::buildHeightPlans(nodes, terrainContext.layerMaps, query);
-    for (auto plan : plans)
+    for (auto& plan : plans)
     {
         logMessage(log, "  Tile '" + std::string(plan.tile->getName()) + "': rasterized "
                         + std::to_string(plan.mergedSurfaceCount) + " selected surface(s) together.");
@@ -144,9 +144,9 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
     beginActionTransaction();
     bool queuedAnyOperation = false;
 
-    const std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
+    std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
         TerrainRasterPlanner::buildMaskPlans(nodes, terrainContext.layerMaps, query);
-    for (auto plan : plans)
+    for (auto& plan : plans)
     {
         if (queueMaskRasterForTile(plan.tile, plan.rasterBuffer, settings, maskIndex, log))
         {
@@ -426,9 +426,8 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile,
         }
     }
 
-    const ImagePtr alphaImage = useRegion
-        ? SurfaceRasterizer::createHeightAlphaImage(preparedImage, region)
-        : SurfaceRasterizer::createHeightAlphaImage(preparedImage);
+        // Use RAII - alphaImage is automatically cleaned up when going out of scope
+    auto alphaImage = SurfaceRasterizer::createHeightAlphaImage(preparedImage);
     if (!alphaImage)
     {
         Log::error("[TerrainManipulator] setTerrainHeight: failed to create alpha image.\n");
@@ -660,7 +659,6 @@ void TerrainManipulator::onTextureDraw(const UGUID& guid, int operationId,
             heightTexture->create(operation.heightImage) &&
             alphaTexture->create(operation.alphaImage))
         {
-            // brushMaterial was pre-created in setTerrainHeight — no loadInheritedMaterial here.
             applied = applyHeightOverwrite(buffer, operation.brushMaterial, heightTexture, alphaTexture);
         }
     }
