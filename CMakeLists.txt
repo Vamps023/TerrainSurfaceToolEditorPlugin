@@ -54,6 +54,8 @@ set(SOURCES
     source/core/TerrainSurfaceToolEditorPlugin.cpp
     source/landscape/LandscapeSaveManager.cpp
     source/rasterizer/SurfaceRasterizer.cpp
+    source/terrain/BrushMaterialFactory.cpp
+    source/terrain/DebugImageExporter.cpp
     source/terrain/TerrainManipulator.cpp
     source/terrain/TerrainRasterPlanner.cpp
     source/ui/TerrainToolController.cpp
@@ -66,6 +68,8 @@ set(HEADERS
     source/landscape/LandscapeSaveManager.h
     source/rasterizer/SurfaceQuery.h
     source/rasterizer/SurfaceRasterizer.h
+    source/terrain/BrushMaterialFactory.h
+    source/terrain/DebugImageExporter.h
     source/terrain/TerrainBrushSettings.h
     source/terrain/TerrainManipulator.h
     source/terrain/TerrainRasterPlanner.h

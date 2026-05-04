@@ -1,14 +1,13 @@
 #pragma once
 
 #include "TerrainBrushSettings.h"
+#include "BrushMaterialFactory.h"
+#include "DebugImageExporter.h"
 #include "../landscape/LandscapeSaveManager.h"
 #include "../rasterizer/SurfaceRasterizer.h"
 
-#include <mutex>
-
 #include <UnigineEvent.h>
 #include <UnigineImage.h>
-#include <UnigineMaterials.h>
 #include <UnigineObjects.h>
 
 #include <functional>
@@ -19,6 +18,15 @@
 // Orchestrates the full pipeline from mesh-surface rasterization through
 // CPU falloff/blend to Landscape::asyncTextureDraw brush dispatch.
 // All heavy operations are asynchronous; use isBusy() to poll completion.
+//
+// Responsibilities:
+//   - Transaction management (begin/end) via LandscapeSaveManager
+//   - Per-tile raster buffer processing (falloff, blend, fill)
+//   - Async GPU dispatch via Landscape::asyncTextureDraw
+//   - Async callback handling (onTextureDraw)
+//
+// Material creation and debug export are delegated to BrushMaterialFactory
+// and DebugImageExporter respectively.
 class TerrainManipulator
 {
 public:
@@ -89,10 +97,6 @@ private:
 
     // Set to true to enable verbose per-frame logging on hot paths.
     static constexpr bool kDebugHotPathLogs = false;
-    // Set to true to save debug height/alpha PNG images to kDebugRasterOutputDir.
-    static constexpr bool kSaveDebugRasterImages = false;
-    // Directory used when kSaveDebugRasterImages is true.
-    static constexpr const char* kDebugRasterOutputDir = "C:/Temp"; // Consider using QDir::tempPath() or std::filesystem::temp_directory_path() for cross-platform support
     // Minimum brush size in world units to prevent degenerate brush stamps.
     static constexpr double kMinBrushSize = 1.0;
     // Number of landscape mask texture pages (each page holds 4 RGBA channels).
@@ -140,9 +144,6 @@ private:
                                               const TerrainBrushSettings& settings,
                                               int maskIndex,
                                               const LogFn& log);
-    static void saveDebugRasterImages(const Unigine::LandscapeLayerMapPtr& tile,
-                                      const SurfaceRasterizer::RasterBuffer& rasterBuffer,
-                                      const LogFn& log);
     // Sub-methods used by applyBrush to handle each modification mode.
     [[nodiscard]] bool applyHeightBrushData(const BrushOperationData& operation,
                                             const Unigine::LandscapeTexturesPtr& buffer,
@@ -154,9 +155,6 @@ private:
                        int dataMask);
 
     [[nodiscard]] static Unigine::ImagePtr createSolidHeightImage(const Unigine::Math::ivec2& resolution, float height);
-    [[nodiscard]] static Unigine::MaterialPtr loadInheritedMaterial(const char* materialPath, const char* logContext);
-    static void clearBrushMaterialTextures(const Unigine::MaterialPtr& brushMaterial);
-    [[nodiscard]] static Unigine::MaterialPtr createMaskBrush(const Unigine::ImagePtr& maskImage);
     [[nodiscard]] static int getMaskFileDataFlags(int maskIndex);
 
     LandscapeSaveManager& saveManager;

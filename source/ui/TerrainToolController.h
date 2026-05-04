@@ -18,6 +18,9 @@ namespace UnigineEditor
 class TerrainSurfaceToolEditorPlugin;
 }
 
+// Controller that mediates between the TerrainToolPanel (UI) and the
+// TerrainManipulator (business logic). All non-trivial operations and
+// data transformations live here so the panel remains a thin view layer.
 class TerrainToolController
 {
 public:
@@ -38,13 +41,22 @@ public:
 
     explicit TerrainToolController(UnigineEditor::TerrainSurfaceToolEditorPlugin* plugin);
 
+    // ---- Data queries for populating UI combo boxes ----
+
+    // Returns sorted unique surface names from the currently selected mesh nodes.
     QStringList selectedSurfaceNames() const;
+
+    // Returns landscape tile options for the dropdown ("All Tiles" + per-tile entries).
     QVector<TileOption> landscapeTileOptions() const;
+
+    // Returns human-readable labels for each landscape mask slot [0..19].
     QStringList maskSlotLabels() const;
 
     // Returns true if the set of selected mesh surface names changed since the last call.
     // Internally tracks the previous selection so the panel does not need to.
     bool hasSelectionChanged();
+
+    // ---- Action methods ----
 
     ApplyResult pullTerrainToSurface(int targetTileId,
                                      const std::string& surfaceName,
@@ -59,9 +71,9 @@ public:
                             const TerrainBrushSettings& settings,
                             const LogFn& log) const;
 
-    // Returns the current brush settings from the UI spin boxes.
-    // This is a convenience method that the panel can call to avoid
-    // duplicating the settings construction logic.
+    // ---- Static helpers ----
+
+    // Builds a TerrainBrushSettings from raw UI values.
     static TerrainBrushSettings currentSettings(double brushSize,
                                                 double flatDistance,
                                                 double falloffDistance);

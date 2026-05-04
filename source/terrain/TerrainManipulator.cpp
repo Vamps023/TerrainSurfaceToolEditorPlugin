@@ -2,7 +2,6 @@
 #include "TerrainRasterPlanner.h"
 #include "../core/NodeTreeWalker.h"
 
-#include <UnigineFileSystem.h>
 #include <UnigineLog.h>
 
 #include <algorithm>
@@ -378,7 +377,7 @@ bool TerrainManipulator::queueHeightRasterForTile(const TerrainContext& terrainC
         return false;
     }
 
-    saveDebugRasterImages(tile, rasterBuffer, log);
+    DebugImageExporter::save(tile, rasterBuffer, log);
     return setTerrainHeight(tile, heightImage, region);
 }
 
@@ -406,54 +405,6 @@ bool TerrainManipulator::queueMaskRasterForTile(const LandscapeLayerMapPtr& tile
     }
 
     return setTerrainMask(tile, maskImage, settings, maskIndex, region);
-}
-
-void TerrainManipulator::saveDebugRasterImages(const LandscapeLayerMapPtr& tile,
-                                               const SurfaceRasterizer::RasterBuffer& rasterBuffer,
-                                               const LogFn& log)
-{
-    if (!kSaveDebugRasterImages || !tile)
-        return;
-
-    const std::string tileName = std::string(tile->getName());
-    const std::string heightPath = std::string(kDebugRasterOutputDir) + "/debug_height_" + tileName + ".png";
-    const std::string alphaPath = std::string(kDebugRasterOutputDir) + "/debug_alpha_" + tileName + ".png";
-    const ivec2 resolution = rasterBuffer.resolution;
-
-    float minHeight = 1e30f;
-    float maxHeight = -1e30f;
-    for (float value : rasterBuffer.values)
-    {
-        if (value == 0.0f)
-            continue;
-
-        minHeight = std::min(minHeight, value);
-        maxHeight = std::max(maxHeight, value);
-    }
-    if (maxHeight <= minHeight)
-        maxHeight = minHeight + 1.0f;
-
-    ImagePtr heightPreview = Image::create();
-    heightPreview->create2D(resolution.x, resolution.y, Image::FORMAT_R8);
-    ImagePtr alphaPreview = Image::create();
-    alphaPreview->create2D(resolution.x, resolution.y, Image::FORMAT_R8);
-
-    for (int y = 0; y < resolution.y; ++y)
-    {
-        for (int x = 0; x < resolution.x; ++x)
-        {
-            const int index = x + (y * resolution.x);
-            const int heightValue = static_cast<int>(
-                clamp((rasterBuffer.values[index] - minHeight) / (maxHeight - minHeight), 0.0f, 1.0f) * 255.0f);
-            const int alphaValue = static_cast<int>(clamp(rasterBuffer.alpha[index], 0.0f, 1.0f) * 255.0f);
-            heightPreview->set2D(x, y, Image::Pixel(heightValue, heightValue, heightValue, 255));
-            alphaPreview->set2D(x, y, Image::Pixel(alphaValue, alphaValue, alphaValue, 255));
-        }
-    }
-
-    heightPreview->save(heightPath.c_str());
-    alphaPreview->save(alphaPath.c_str());
-    logMessage(log, "  DEBUG: saved " + heightPath + " and " + alphaPath);
 }
 
 bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile,
@@ -489,7 +440,7 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile,
         }
     }
 
-        // Use RAII - alphaImage is automatically cleaned up when going out of scope
+    // Use RAII - alphaImage is automatically cleaned up when going out of scope
     auto alphaImage = SurfaceRasterizer::createHeightAlphaImage(preparedImage);
     if (!alphaImage)
     {
@@ -499,8 +450,8 @@ bool TerrainManipulator::setTerrainHeight(const LandscapeLayerMapPtr& tile,
 
     // Pre-create the overwrite material here so onTextureDraw does not need to
     // call loadInheritedMaterial per-tile inside the async callback.
-    const MaterialPtr overwriteMaterial = loadInheritedMaterial("terrain_brush_r32f_overwrite.basebrush",
-                                                                 "terrain height overwrite");
+    const MaterialPtr overwriteMaterial = BrushMaterialFactory::loadInheritedMaterial(
+        "terrain_brush_r32f_overwrite.basebrush", "terrain height overwrite");
     if (!overwriteMaterial)
     {
         Log::error("[TerrainManipulator] setTerrainHeight: failed to load height overwrite material.\n");
@@ -560,7 +511,7 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
         }
     }
 
-    const MaterialPtr brushMaterial = createMaskBrush(preparedImage);
+    const MaterialPtr brushMaterial = BrushMaterialFactory::createMaskBrush(preparedImage);
     if (!brushMaterial)
     {
         Log::error("[TerrainManipulator] setTerrainMask: failed to create mask brush material.\n");
@@ -605,7 +556,7 @@ bool TerrainManipulator::applyHeightOverwrite(const LandscapeTexturesPtr& buffer
     brushMaterial->setTexture("new_height", heightTexture);
     brushMaterial->setTexture("new_alpha", alphaTexture);
     brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-    clearBrushMaterialTextures(brushMaterial);
+    BrushMaterialFactory::clearTerrainTextures(brushMaterial);
     brushMaterial->setTexture("new_height", nullptr);
     brushMaterial->setTexture("new_alpha", nullptr);
     return true;
@@ -646,7 +597,7 @@ bool TerrainManipulator::applyHeightBrushData(const BrushOperationData& operatio
     brushMaterial->setParameterFloat("height", operation.brushHeight);
     brushMaterial->setParameterInt("data_mask", dataMask);
     brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
-    clearBrushMaterialTextures(brushMaterial);
+    BrushMaterialFactory::clearTerrainTextures(brushMaterial);
     return true;
 }
 
@@ -689,13 +640,7 @@ bool TerrainManipulator::applyMaskBrush(const BrushOperationData& operation,
     brushMaterial->setState("masks_overide", 0);
     brushMaterial->runExpression("brush", buffer->getResolution().x, buffer->getResolution().y);
 
-    for (int pageIndex = 0; pageIndex < kLandscapeMaskPageCount; ++pageIndex)
-    {
-        const std::string maskName = "terrain_mask_" + std::to_string(pageIndex);
-        const std::string opacityName = "terrain_opacity_mask_" + std::to_string(pageIndex);
-        brushMaterial->setTexture(maskName.c_str(), nullptr);
-        brushMaterial->setTexture(opacityName.c_str(), nullptr);
-    }
+    BrushMaterialFactory::clearMaskTextures(brushMaterial);
 
     return true;
 }
@@ -755,58 +700,6 @@ ImagePtr TerrainManipulator::createSolidHeightImage(const ivec2& resolution, flo
     }
 
     return image;
-}
-
-MaterialPtr TerrainManipulator::loadInheritedMaterial(const char* materialPath, const char* logContext)
-{
-    const auto fileGuid = FileSystem::getGUID(FileSystem::resolvePartialVirtualPath(materialPath));
-    if (!fileGuid.isValid())
-    {
-        Log::error("[TerrainManipulator] Missing %s material '%s'\n", logContext, materialPath);
-        return nullptr;
-    }
-
-    const auto baseMaterial = Materials::findMaterialByFileGUID(fileGuid);
-    if (!baseMaterial)
-    {
-        Log::error("[TerrainManipulator] Failed to load %s material '%s'\n", logContext, materialPath);
-        return nullptr;
-    }
-
-    return baseMaterial->inherit();
-}
-
-void TerrainManipulator::clearBrushMaterialTextures(const MaterialPtr& brushMaterial)
-{
-    if (!brushMaterial)
-        return;
-
-    // Clear all terrain source textures to prevent them from leaking into
-    // subsequent brush operations that reuse the same inherited material.
-    brushMaterial->setTexture("terrain_height", nullptr);
-    brushMaterial->setTexture("terrain_opacity_height", nullptr);
-    brushMaterial->setTexture("terrain_albedo", nullptr);
-}
-
-MaterialPtr TerrainManipulator::createMaskBrush(const ImagePtr& maskImage)
-{
-    if (!maskImage)
-        return nullptr;
-
-    MaterialPtr brushMaterial = loadInheritedMaterial("editor2/brushes/brush.basebrush", "mask brush");
-    if (!brushMaterial)
-        return nullptr;
-
-    const auto opacityTextureIndex = brushMaterial->findTexture("opacity");
-    if (opacityTextureIndex < 0)
-        return nullptr;
-
-    brushMaterial->setTextureImage(opacityTextureIndex, maskImage);
-    brushMaterial->setParameterFloat4("color", vec4(1.0f, 1.0f, 1.0f, 1.0f));
-    brushMaterial->setParameterFloat("color_intensity", 1.0f);
-    brushMaterial->setParameterFloat("contrast", 0.0f);
-    brushMaterial->setState("masks_overide", 0);
-    return brushMaterial;
 }
 
 int TerrainManipulator::getMaskFileDataFlags(int maskIndex)
