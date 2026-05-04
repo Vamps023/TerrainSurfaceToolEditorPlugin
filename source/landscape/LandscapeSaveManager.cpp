@@ -94,7 +94,7 @@ void LandscapeSaveManager::forceFlush()
 
 std::string LandscapeSaveManager::guidKey(const UGUID& guid)
 {
-    return guid.isValid() ? std::string(guid.getString()) : std::string();
+    return guid.isValid() ? std::string(guid.makeString().get()) : std::string();
 }
 
 void LandscapeSaveManager::queueSave(const std::string& key, const UGUID& guid, std::uint64_t version)

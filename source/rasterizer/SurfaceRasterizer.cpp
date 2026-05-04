@@ -759,12 +759,12 @@ bool SurfaceRasterizer::appendSurfaceTrianglesWorldSpace(const ObjectSurface& ob
     if (!meshStaticObject)
         return false;
 
-    MeshStaticPtr mesh = meshStaticObject->getMeshForce();
+    MeshPtr mesh = meshStaticObject->getMeshForceRAM();
     if (!mesh)
         return false;
 
     const Vector<int>& indices = mesh->getCIndices(surfaceIndex);
-    const int surfaceVertexCount = mesh->getNumVertices(surfaceIndex);
+    const int surfaceVertexCount = mesh->getNumVertex(surfaceIndex);
 
     outVertices.reserve(indices.size());
     for (int indexOffset = 0; indexOffset + 2 < indices.size(); indexOffset += 3)

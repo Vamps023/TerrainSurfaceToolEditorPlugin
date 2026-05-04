@@ -90,11 +90,9 @@ set PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%
 
 echo.
 echo Step 1: Configuring with CMake...
-if not exist "%BUILD_DIR%" md "%BUILD_DIR%"
+if exist "%BUILD_DIR%" rmdir /s /q "%BUILD_DIR%"
+md "%BUILD_DIR%"
 cd /d "%BUILD_DIR%"
-
-if exist "CMakeCache.txt" del /f /q "CMakeCache.txt"
-if exist "CMakeFiles" rmdir /s /q "CMakeFiles"
 
 echo Using Ninja generator...
 cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Release ^
@@ -111,7 +109,7 @@ echo CMake configuration successful!
 
 echo.
 echo Step 2: Building project...
-ninja -v
+ninja
 
 if %ERRORLEVEL% NEQ 0 (
     echo Build failed!
