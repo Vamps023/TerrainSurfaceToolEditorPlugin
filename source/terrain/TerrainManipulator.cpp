@@ -1,5 +1,6 @@
 #include "TerrainManipulator.h"
 #include "TerrainRasterPlanner.h"
+#include "../core/NodeTreeWalker.h"
 
 #include <UnigineFileSystem.h>
 #include <UnigineLog.h>
@@ -50,12 +51,14 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
                                               const TerrainBrushSettings& settings,
                                               const LogFn& log)
 {
+    // Validate inputs early before any heavy work.
     if (nodes.empty())
     {
         logMessage(log, "ERROR: No selected mesh nodes.");
         return false;
     }
 
+    // Compile the surface name pattern (exact match or regex).
     SurfaceRasterizer::SurfaceQuery query;
     std::string queryError;
     if (!SurfaceRasterizer::buildSurfaceQuery(surfacePattern, query, queryError))
@@ -64,6 +67,7 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
         return false;
     }
 
+    // Resolve the target terrain and its tiles.
     TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
     if (!terrainContext.terrain)
     {
@@ -71,6 +75,7 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
         return false;
     }
 
+    // Begin a save transaction so all tile writes are batched into a single save.
     (void)beginActionTransaction();
 
     // Clean rasterization approach:
@@ -85,8 +90,12 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
 
     bool queuedAnyOperation = false;
 
+    // Build per-tile raster plans: each plan contains the merged heightmap of all
+    // matching mesh surfaces that intersect that tile.
     std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
         TerrainRasterPlanner::buildHeightPlans(nodes, terrainContext.layerMaps, query);
+
+    // Queue each plan for async GPU dispatch via Landscape::asyncTextureDraw.
     for (auto& plan : plans)
     {
         logMessage(log, "  Tile '" + std::string(plan.tile->getName()) + "': rasterized "
@@ -104,6 +113,7 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
         }
     }
 
+    // End the transaction if no operations were queued (fast-path cleanup).
     finishActionScheduling();
     if (!queuedAnyOperation)
         logMessage(log, "WARNING: No terrain operations were queued.");
@@ -163,40 +173,59 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
     return queuedAnyOperation;
 }
 
-bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
-                                          const ObjectLandscapeTerrainPtr& terrain,
-                                          const LandscapeLayerMapPtr& targetTile,
-                                          const TerrainBrushSettings& settings,
-                                          const LogFn& log)
+bool TerrainManipulator::eraseHeight(const std::vector<NodePtr>& nodes,
+                                     const ObjectLandscapeTerrainPtr& terrain,
+                                     const LandscapeLayerMapPtr& targetTile,
+                                     const TerrainBrushSettings& settings,
+                                     const LogFn& log)
 {
-    // nodes and settings are intentionally unused here: this operation erases every
-    // tile of the selected terrain (or targetTile if specified), not just those
-    // under the selected meshes. The parameters are kept for API consistency.
-    (void)nodes;
-    (void)settings;
-
-    TerrainContext terrainContext = buildTerrainContext(terrain, targetTile);
-    if (!terrainContext.terrain)
-    {
-        logMessage(log, "ERROR: No active landscape terrain.");
-        return false;
-    }
+    // Full erase: sets ALL heightmap data to 0.0 m on EVERY tile of EVERY
+    // landscape terrain in the world. If targetTile is specified, only that
+    // single tile is erased. Mesh nodes are not used for the erase itself.
+    UNIGINE_UNUSED(nodes);
+    UNIGINE_UNUSED(settings);
 
     (void)beginActionTransaction();
     bool queuedAnyOperation = false;
     constexpr float kErasedHeight = 0.0f;
 
-    const std::string scope = targetTile ? ("tile '" + std::string(targetTile->getName()) + "'") : "all tiles";
-    logMessage(log, "  Erasing terrain heightmap data to 0.0 m on " + scope + ".");
+    std::vector<LandscapeLayerMapPtr> tilesToErase;
 
-    for (const auto& tile : terrainContext.layerMaps)
+    if (targetTile)
+    {
+        tilesToErase.push_back(targetTile);
+        logMessage(log, "  Erasing single tile heightmap data to 0.0 m.");
+    }
+    else
+    {
+        tilesToErase = collectAllLandscapeTiles();
+        logMessage(log, "  Erasing ALL heightmap data to 0.0 m on ALL landscape terrains in the world.");
+    }
+
+    logMessage(log, "  Tiles to erase: " + std::to_string(tilesToErase.size()));
+
+    for (const auto& tile : tilesToErase)
     {
         if (!tile)
+        {
+            logMessage(log, "  WARNING: Skipping null tile.");
             continue;
+        }
 
-        const ImagePtr heightImage = createSolidHeightImage(tile->getResolution(), kErasedHeight);
+        const ivec2 resolution = tile->getResolution();
+        logMessage(log, "  -> Erasing tile '" + std::string(tile->getName()) + "' (" +
+                         std::to_string(resolution.x) + "x" + std::to_string(resolution.y) + ")");
+
+        const ImagePtr heightImage = createSolidHeightImage(resolution, kErasedHeight);
         if (setTerrainHeight(tile, heightImage))
+        {
             queuedAnyOperation = true;
+            logMessage(log, "     Queued erase operation for tile.");
+        }
+        else
+        {
+            logMessage(log, "     FAILED to queue erase operation for tile.");
+        }
     }
 
     finishActionScheduling();
@@ -278,6 +307,39 @@ TerrainManipulator::TerrainContext TerrainManipulator::buildTerrainContext(const
     }
 
     return context;
+}
+
+std::vector<LandscapeLayerMapPtr> TerrainManipulator::collectAllLandscapeTiles()
+{
+    std::vector<LandscapeLayerMapPtr> allTiles;
+
+    Vector<NodePtr> rootNodes;
+    World::getRootNodes(rootNodes);
+
+    std::unordered_set<int> visitedNodeIds;
+    std::vector<ObjectLandscapeTerrainPtr> terrains;
+    for (const auto& root : rootNodes)
+    {
+        if (!root)
+            continue;
+        NodeTreeWalker::collectNodesRecursive<Node::OBJECT_LANDSCAPE_TERRAIN, ObjectLandscapeTerrain>(
+            root, terrains, visitedNodeIds);
+    }
+
+    for (const auto& terrain : terrains)
+    {
+        if (!terrain)
+            continue;
+
+        for (int childIndex = 0; childIndex < terrain->getNumChildren(); ++childIndex)
+        {
+            LandscapeLayerMapPtr tile = checked_ptr_cast<LandscapeLayerMap>(terrain->getChild(childIndex));
+            if (tile)
+                allTiles.push_back(tile);
+        }
+    }
+
+    return allTiles;
 }
 
 bool TerrainManipulator::queueHeightRasterForTile(const TerrainContext& terrainContext,
@@ -719,8 +781,11 @@ void TerrainManipulator::clearBrushMaterialTextures(const MaterialPtr& brushMate
     if (!brushMaterial)
         return;
 
+    // Clear all terrain source textures to prevent them from leaking into
+    // subsequent brush operations that reuse the same inherited material.
     brushMaterial->setTexture("terrain_height", nullptr);
     brushMaterial->setTexture("terrain_opacity_height", nullptr);
+    brushMaterial->setTexture("terrain_albedo", nullptr);
 }
 
 MaterialPtr TerrainManipulator::createMaskBrush(const ImagePtr& maskImage)

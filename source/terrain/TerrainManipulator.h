@@ -48,13 +48,13 @@ public:
                             int maskIndex,
                             const LogFn& log);
 
-    // Erases all heightmap data (sets height to 0) on all tiles of the terrain.
+    // Erases all heightmap data (sets height to 0) on all tiles of all landscapes.
     // Returns true if at least one tile was modified.
-    bool paintWhiteHeight(const std::vector<Unigine::NodePtr>& nodes,
-                          const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                          const Unigine::LandscapeLayerMapPtr& targetTile,
-                          const TerrainBrushSettings& settings,
-                          const LogFn& log);
+    bool eraseHeight(const std::vector<Unigine::NodePtr>& nodes,
+                     const Unigine::ObjectLandscapeTerrainPtr& terrain,
+                     const Unigine::LandscapeLayerMapPtr& targetTile,
+                     const TerrainBrushSettings& settings,
+                     const LogFn& log);
 
     // Returns true while async texture-draw operations are still in flight.
     [[nodiscard]] bool isBusy() const;
@@ -108,6 +108,8 @@ private:
 
     [[nodiscard]] static TerrainContext buildTerrainContext(const Unigine::ObjectLandscapeTerrainPtr& terrain,
                                                             const Unigine::LandscapeLayerMapPtr& targetTile);
+    // Collects ALL LandscapeLayerMap tiles from ALL landscape terrains in the world.
+    [[nodiscard]] static std::vector<Unigine::LandscapeLayerMapPtr> collectAllLandscapeTiles();
     [[nodiscard]] bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile,
                                         const Unigine::ImagePtr& heightImage,
                                         const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());

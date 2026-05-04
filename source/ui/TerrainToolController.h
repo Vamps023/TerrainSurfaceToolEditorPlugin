@@ -55,9 +55,16 @@ public:
                                    const TerrainBrushSettings& settings,
                                    int maskIndex,
                                    const LogFn& log) const;
-    ApplyResult paintWhiteHeight(int targetTileId,
-                                 const TerrainBrushSettings& settings,
-                                 const LogFn& log) const;
+    ApplyResult eraseHeight(int targetTileId,
+                            const TerrainBrushSettings& settings,
+                            const LogFn& log) const;
+
+    // Returns the current brush settings from the UI spin boxes.
+    // This is a convenience method that the panel can call to avoid
+    // duplicating the settings construction logic.
+    static TerrainBrushSettings currentSettings(double brushSize,
+                                                double flatDistance,
+                                                double falloffDistance);
 
 private:
     struct TargetContext

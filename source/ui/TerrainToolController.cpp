@@ -173,15 +173,17 @@ TerrainToolController::ApplyResult TerrainToolController::applyLandscapeMask(
     return result;
 }
 
-TerrainToolController::ApplyResult TerrainToolController::paintWhiteHeight(
+TerrainToolController::ApplyResult TerrainToolController::eraseHeight(
     int targetTileId,
     const TerrainBrushSettings& settings,
     const LogFn& log) const
 {
-    const std::vector<NodePtr> selectedNodes = plugin ? plugin->getSelectedMeshNodes() : std::vector<NodePtr>();
-    ApplyResult result = validateSelection(selectedNodes, false, std::string());
-    if (!result.error.isEmpty())
+    ApplyResult result;
+    if (!plugin || !plugin->manipulator())
+    {
+        result.error = "ERROR: Plugin is not initialized.";
         return result;
+    }
 
     const TargetContext target = resolveTarget(targetTileId);
     if (!target.error.isEmpty())
@@ -190,9 +192,23 @@ TerrainToolController::ApplyResult TerrainToolController::paintWhiteHeight(
         return result;
     }
 
-    result.queued = plugin->manipulator()->paintWhiteHeight(
-        selectedNodes, target.terrain, target.tile, settings, log);
+    // Erase Height does not require mesh selection — it erases terrain heightmap directly.
+    result.queued = plugin->manipulator()->eraseHeight(
+        std::vector<NodePtr>(), target.terrain, target.tile, settings, log);
     return result;
+}
+
+TerrainBrushSettings TerrainToolController::currentSettings(double brushSize,
+                                                            double flatDistance,
+                                                            double falloffDistance)
+{
+    TerrainBrushSettings settings;
+    settings.brushSize = brushSize;
+    settings.flatDistance = flatDistance;
+    settings.falloffDistance = falloffDistance;
+    settings.smoothingStrength = 0.5; // reserved for future smoothing pass
+    settings.clampToOriginal = false;
+    return settings;
 }
 
 TerrainToolController::TargetContext TerrainToolController::resolveTarget(int targetTileId) const
