@@ -16,12 +16,12 @@ public:
         int mergedSurfaceCount = 0;
     };
 
-    static std::vector<TileRasterPlan> buildHeightPlans(
+    [[nodiscard]] static std::vector<TileRasterPlan> buildHeightPlans(
         const std::vector<Unigine::NodePtr>& nodes,
         const std::vector<Unigine::LandscapeLayerMapPtr>& tiles,
         const SurfaceRasterizer::SurfaceQuery& query);
 
-    static std::vector<TileRasterPlan> buildMaskPlans(
+    [[nodiscard]] static std::vector<TileRasterPlan> buildMaskPlans(
         const std::vector<Unigine::NodePtr>& nodes,
         const std::vector<Unigine::LandscapeLayerMapPtr>& tiles,
         const SurfaceRasterizer::SurfaceQuery& query);

@@ -340,7 +340,6 @@ void TerrainToolPanel::onApplyPullTerrain()
     if (result.queued && plugin && plugin->manipulator())
     {
         operationCountAtStart = static_cast<int>(plugin->manipulator()->pendingOperationCount());
-        progressBar->setValue(0);
     }
     else
     {

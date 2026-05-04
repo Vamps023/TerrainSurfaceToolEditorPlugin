@@ -57,9 +57,9 @@ public:
                           const LogFn& log);
 
     // Returns true while async texture-draw operations are still in flight.
-    bool isBusy() const;
+    [[nodiscard]] bool isBusy() const;
     // Returns the number of queued but not yet dispatched brush operations.
-    size_t pendingOperationCount() const;
+    [[nodiscard]] size_t pendingOperationCount() const;
     // Forces an immediate flush of all pending landscape saves.
     void flushPendingSaves();
 
@@ -92,7 +92,9 @@ private:
     // Set to true to save debug height/alpha PNG images to kDebugRasterOutputDir.
     static constexpr bool kSaveDebugRasterImages = false;
     // Directory used when kSaveDebugRasterImages is true.
-    static constexpr const char* kDebugRasterOutputDir = "C:/Temp";
+    static constexpr const char* kDebugRasterOutputDir = "C:/Temp"; // Consider using QDir::tempPath() or std::filesystem::temp_directory_path() for cross-platform support
+    // Minimum brush size in world units to prevent degenerate brush stamps.
+    static constexpr double kMinBrushSize = 1.0;
     // Number of landscape mask texture pages (each page holds 4 RGBA channels).
     static constexpr int kLandscapeMaskPageCount = 5;
     // kMaxLandscapeMaskIndex is defined in TerrainBrushSettings.h (shared constant).
@@ -100,64 +102,63 @@ private:
     // (bit 0 = height, bit 1 = opacity-height). Landscape mask channels start at bit 2.
     static constexpr int kMaskDataBitOffset = 2;
 
-    bool beginActionTransaction();
+    [[nodiscard]] bool beginActionTransaction();
     void finishActionScheduling();
     void endTransactionsIfIdle();
 
-    static TerrainContext buildTerrainContext(const Unigine::ObjectLandscapeTerrainPtr& terrain,
-                                             const Unigine::LandscapeLayerMapPtr& targetTile);
-    bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile,
-                          const Unigine::ImagePtr& heightImage,
-                          const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
-    bool setTerrainMask(const Unigine::LandscapeLayerMapPtr& tile,
-                        const Unigine::ImagePtr& maskImage,
-                        const TerrainBrushSettings& settings,
-                        int maskIndex,
-                        const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
-    bool applyHeightOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
-                              const Unigine::MaterialPtr& brushMaterial,
-                              const Unigine::TexturePtr& heightTexture,
-                              const Unigine::TexturePtr& alphaTexture);
-    bool applyBrush(const BrushOperationData& operation,
-                    const Unigine::LandscapeTexturesPtr& buffer,
-                    int dataMask);
-    bool applyMaskBrush(const BrushOperationData& operation,
-                        const Unigine::LandscapeTexturesPtr& buffer);
-    bool queueHeightRasterForTile(const TerrainContext& terrainContext,
-                                  const Unigine::LandscapeLayerMapPtr& tile,
-                                  SurfaceRasterizer::RasterBuffer& rasterBuffer,
-                                  double flatDistance,
-                                  double falloffDistance,
-                                  const TerrainBrushSettings& settings,
-                                  const LogFn& log);
+    [[nodiscard]] static TerrainContext buildTerrainContext(const Unigine::ObjectLandscapeTerrainPtr& terrain,
+                                                            const Unigine::LandscapeLayerMapPtr& targetTile);
+    [[nodiscard]] bool setTerrainHeight(const Unigine::LandscapeLayerMapPtr& tile,
+                                        const Unigine::ImagePtr& heightImage,
+                                        const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
+    [[nodiscard]] bool setTerrainMask(const Unigine::LandscapeLayerMapPtr& tile,
+                                      const Unigine::ImagePtr& maskImage,
+                                      const TerrainBrushSettings& settings,
+                                      int maskIndex,
+                                      const SurfaceRasterizer::RasterRegion& region = SurfaceRasterizer::RasterRegion());
+    [[nodiscard]] bool applyHeightOverwrite(const Unigine::LandscapeTexturesPtr& buffer,
+                                            const Unigine::MaterialPtr& brushMaterial,
+                                            const Unigine::TexturePtr& heightTexture,
+                                            const Unigine::TexturePtr& alphaTexture);
+    [[nodiscard]] bool applyBrush(const BrushOperationData& operation,
+                                  const Unigine::LandscapeTexturesPtr& buffer,
+                                  int dataMask);
+    [[nodiscard]] bool applyMaskBrush(const BrushOperationData& operation,
+                                      const Unigine::LandscapeTexturesPtr& buffer);
+    [[nodiscard]] bool queueHeightRasterForTile(const TerrainContext& terrainContext,
+                                                const Unigine::LandscapeLayerMapPtr& tile,
+                                                SurfaceRasterizer::RasterBuffer& rasterBuffer,
+                                                double flatDistance,
+                                                double falloffDistance,
+                                                const TerrainBrushSettings& settings,
+                                                const LogFn& log);
     // Applies falloff + mask image creation for a single tile in applyLandscapeMask.
-    bool queueMaskRasterForTile(const Unigine::LandscapeLayerMapPtr& tile,
-                                SurfaceRasterizer::RasterBuffer& rasterBuffer,
-                                const TerrainBrushSettings& settings,
-                                int maskIndex,
-                                const LogFn& log);
+    [[nodiscard]] bool queueMaskRasterForTile(const Unigine::LandscapeLayerMapPtr& tile,
+                                              SurfaceRasterizer::RasterBuffer& rasterBuffer,
+                                              const TerrainBrushSettings& settings,
+                                              int maskIndex,
+                                              const LogFn& log);
     static void saveDebugRasterImages(const Unigine::LandscapeLayerMapPtr& tile,
                                       const SurfaceRasterizer::RasterBuffer& rasterBuffer,
                                       const LogFn& log);
     // Sub-methods used by applyBrush to handle each modification mode.
-    bool applyHeightBrushData(const BrushOperationData& operation,
-                              const Unigine::LandscapeTexturesPtr& buffer,
-                              int dataMask);
+    [[nodiscard]] bool applyHeightBrushData(const BrushOperationData& operation,
+                                            const Unigine::LandscapeTexturesPtr& buffer,
+                                            int dataMask);
 
     void onTextureDraw(const Unigine::UGUID& guid, int operationId,
                        const Unigine::LandscapeTexturesPtr& buffer,
                        const Unigine::Math::ivec2& coord,
                        int dataMask);
 
-    static Unigine::ImagePtr createSolidHeightImage(const Unigine::Math::ivec2& resolution, float height);
-    static Unigine::MaterialPtr loadInheritedMaterial(const char* materialPath, const char* logContext);
+    [[nodiscard]] static Unigine::ImagePtr createSolidHeightImage(const Unigine::Math::ivec2& resolution, float height);
+    [[nodiscard]] static Unigine::MaterialPtr loadInheritedMaterial(const char* materialPath, const char* logContext);
     static void clearBrushMaterialTextures(const Unigine::MaterialPtr& brushMaterial);
-    static Unigine::MaterialPtr createMaskBrush(const Unigine::ImagePtr& maskImage);
-    static int getMaskFileDataFlags(int maskIndex);
+    [[nodiscard]] static Unigine::MaterialPtr createMaskBrush(const Unigine::ImagePtr& maskImage);
+    [[nodiscard]] static int getMaskFileDataFlags(int maskIndex);
 
-        LandscapeSaveManager& saveManager;
+    LandscapeSaveManager& saveManager;
     std::unordered_map<int, BrushOperationData> pendingOperations;
-    mutable std::mutex pendingOpsMutex;
 
     Unigine::EventConnection textureDrawConnection;
     int pendingTransactionCommits = 0;

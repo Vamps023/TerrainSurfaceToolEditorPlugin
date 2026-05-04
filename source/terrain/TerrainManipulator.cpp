@@ -16,11 +16,6 @@ double clampPositive(double value)
     return std::max(0.0, value);
 }
 
-double effectiveFlatDistance(const TerrainBrushSettings& settings)
-{
-    return clampPositive(settings.flatDistance) + (clampPositive(settings.brushSize) * 0.5);
-}
-
 void logMessage(const TerrainManipulator::LogFn& log, const std::string& message)
 {
     if (log)
@@ -76,7 +71,7 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
         return false;
     }
 
-    beginActionTransaction();
+    (void)beginActionTransaction();
 
     // Clean rasterization approach:
     //   1. Rasterize the mesh surface directly into a heightmap (pixels covered by mesh = target height).
@@ -84,6 +79,9 @@ bool TerrainManipulator::pullTerrainToSurface(const std::vector<NodePtr>& nodes,
     // Brush Size is no longer used here (it only affected the old stamp-mode which caused ring artifacts).
     const double flatDistance = clampPositive(settings.flatDistance);
     const double falloffDistance = clampPositive(settings.falloffDistance);
+
+    logMessage(log, "  Settings — Flat Distance: " + std::to_string(flatDistance)
+                    + " m, Falloff Distance: " + std::to_string(falloffDistance) + " m");
 
     bool queuedAnyOperation = false;
 
@@ -141,8 +139,11 @@ bool TerrainManipulator::applyLandscapeMask(const std::vector<NodePtr>& nodes,
         return false;
     }
 
-    beginActionTransaction();
+    (void)beginActionTransaction();
     bool queuedAnyOperation = false;
+
+    logMessage(log, "  Settings — Flat Distance: " + std::to_string(clampPositive(settings.flatDistance))
+                    + " m, Falloff Distance: " + std::to_string(clampPositive(settings.falloffDistance)) + " m");
 
     std::vector<TerrainRasterPlanner::TileRasterPlan> plans =
         TerrainRasterPlanner::buildMaskPlans(nodes, terrainContext.layerMaps, query);
@@ -181,7 +182,7 @@ bool TerrainManipulator::paintWhiteHeight(const std::vector<NodePtr>& nodes,
         return false;
     }
 
-    beginActionTransaction();
+    (void)beginActionTransaction();
     bool queuedAnyOperation = false;
     constexpr float kErasedHeight = 0.0f;
 
@@ -331,7 +332,7 @@ bool TerrainManipulator::queueMaskRasterForTile(const LandscapeLayerMapPtr& tile
         return false;
     }
 
-    const double maskFlatDistance = effectiveFlatDistance(settings);
+    const double maskFlatDistance = clampPositive(settings.flatDistance);
     SurfaceRasterizer::applyDistanceFalloff(tile, rasterBuffer, maskFlatDistance, settings.falloffDistance);
 
     const SurfaceRasterizer::RasterRegion region = SurfaceRasterizer::calculateTouchedRegion(rasterBuffer);
@@ -506,7 +507,8 @@ bool TerrainManipulator::setTerrainMask(const LandscapeLayerMapPtr& tile,
 
     BrushOperationData operation;
     operation.brushMaterial = brushMaterial;
-    operation.brushSize = static_cast<float>(std::max(1.0, settings.brushSize));
+    constexpr double kMinBrushSize = 1.0;
+    operation.brushSize = static_cast<float>(std::max(kMinBrushSize, settings.brushSize));
     operation.modifyMask = true;
     operation.maskIndex = maskIndex;
     operation.drawCoord = drawCoord;
