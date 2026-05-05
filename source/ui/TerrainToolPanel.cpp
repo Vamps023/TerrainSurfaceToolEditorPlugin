@@ -138,11 +138,11 @@ void TerrainToolPanel::setupUi()
     connect(buttonMask, &QPushButton::clicked, this, &TerrainToolPanel::onApplyToMask);
     actionsLayout->addWidget(buttonMask);
 
-    buttonPaintWhite = new QPushButton("Paint Complete White Height", this);
-    buttonPaintWhite->setStyleSheet(
-        "QPushButton { background-color: #2a7f8f; color: white; padding: 8px; }");
-    connect(buttonPaintWhite, &QPushButton::clicked, this, &TerrainToolPanel::onPaintCompleteWhite);
-    actionsLayout->addWidget(buttonPaintWhite);
+    buttonEraseHeight = new QPushButton("Erase Heightmap Data", this);
+    buttonEraseHeight->setStyleSheet(
+        "QPushButton { background-color: #8f2a2a; color: white; padding: 8px; }");
+    connect(buttonEraseHeight, &QPushButton::clicked, this, &TerrainToolPanel::onEraseHeight);
+    actionsLayout->addWidget(buttonEraseHeight);
 
     mainLayout->addWidget(actionsGroup);
 
@@ -271,13 +271,10 @@ void TerrainToolPanel::appendLog(const QString& message)
 
 TerrainBrushSettings TerrainToolPanel::currentSettings() const
 {
-    TerrainBrushSettings settings;
-    settings.brushSize = kDefaultBrushSize;
-    settings.flatDistance = spinFlatDistance ? spinFlatDistance->value() : 30.0;
-    settings.falloffDistance = spinFalloffDistance ? spinFalloffDistance->value() : 30.0;
-    settings.smoothingStrength = kDefaultSmoothingStrength;
-    settings.clampToOriginal = false;
-    return settings;
+    const double brushSize = kDefaultBrushSize;
+    const double flatDistance = spinFlatDistance ? spinFlatDistance->value() : 30.0;
+    const double falloffDistance = spinFalloffDistance ? spinFalloffDistance->value() : 30.0;
+    return TerrainToolController::currentSettings(brushSize, flatDistance, falloffDistance);
 }
 
 void TerrainToolPanel::refreshLandscapeTileOptions(bool preserveSelection)
@@ -340,7 +337,6 @@ void TerrainToolPanel::onApplyPullTerrain()
     if (result.queued && plugin && plugin->manipulator())
     {
         operationCountAtStart = static_cast<int>(plugin->manipulator()->pendingOperationCount());
-        progressBar->setValue(0);
     }
     else
     {
@@ -395,13 +391,13 @@ void TerrainToolPanel::onApplyToMask()
 }
 
 
-void TerrainToolPanel::onPaintCompleteWhite()
+void TerrainToolPanel::onEraseHeight()
 {
-    appendLog("=== Paint Complete White Height ===");
+    appendLog("=== Erase Heightmap Data ===");
     progressBar->setValue(0);
 
     const TerrainBrushSettings settings = currentSettings();
-    const TerrainToolController::ApplyResult result = controller->paintWhiteHeight(
+    const TerrainToolController::ApplyResult result = controller->eraseHeight(
         currentLandscapeTileId(),
         settings,
         [this](const std::string& message)
@@ -414,7 +410,7 @@ void TerrainToolPanel::onPaintCompleteWhite()
         return;
     }
 
-    appendLog("Erasing selected terrain tile heightmap data.");
+    appendLog("Erasing terrain heightmap data to 0.0 m.");
     if (result.queued && plugin && plugin->manipulator())
     {
         operationCountAtStart = static_cast<int>(plugin->manipulator()->pendingOperationCount());
@@ -424,5 +420,5 @@ void TerrainToolPanel::onPaintCompleteWhite()
     {
         progressBar->setValue(100);
     }
-    appendLog(result.queued ? "=== Paint White queued — watch progress bar ===" : "=== Paint White Complete (No Changes) ===");
+    appendLog(result.queued ? "=== Erase Height queued — watch progress bar ===" : "=== Erase Height Complete (No Changes) ===");
 }

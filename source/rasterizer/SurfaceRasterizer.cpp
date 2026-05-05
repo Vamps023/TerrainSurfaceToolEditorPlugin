@@ -275,27 +275,27 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
 
     const int width = resolution.x;
     const int height = resolution.y;
-    const int pixelCount = width * height;
+    const std::size_t pixelCount = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
     std::vector<int> dist(pixelCount, kInfDistance);
     std::vector<int> nearestSeed(pixelCount, -1);
 
     // Seed cells (rasterised triangle interior) have distance 0 and reference themselves.
     for (int seedIndex : buffer.seeds)
     {
-        if (seedIndex >= 0 && seedIndex < pixelCount)
+        if (seedIndex >= 0 && static_cast<std::size_t>(seedIndex) < pixelCount)
         {
             dist[seedIndex] = 0;
             nearestSeed[seedIndex] = seedIndex;
         }
     }
 
-    auto relax = [&](int currentIndex, int neighbourIndex, int cost)
+    auto relax = [&](int sourceIndex, int targetIndex, int cost)
     {
-        const int candidate = dist[currentIndex] + cost;
-        if (candidate < dist[neighbourIndex])
+        const int candidate = dist[sourceIndex] + cost;
+        if (candidate < dist[targetIndex])
         {
-            dist[neighbourIndex] = candidate;
-            nearestSeed[neighbourIndex] = nearestSeed[currentIndex];
+            dist[targetIndex] = candidate;
+            nearestSeed[targetIndex] = nearestSeed[sourceIndex];
         }
     };
 
@@ -339,12 +339,12 @@ void SurfaceRasterizer::applyDistanceFalloff(const LandscapeLayerMapPtr& terrain
 
     // Convert chamfer distance to pixel-space Euclidean approximation (divide by axis cost)
     // and write height + alpha for every pixel within flat + falloff radius.
-    for (int i = 0; i < pixelCount; ++i)
+    for (std::size_t i = 0; i < pixelCount; ++i)
     {
         if (dist[i] >= kInfDistance)
             continue;
 
-        const float pixelDist = static_cast<float>(dist[i]) / static_cast<float>(kAxisCost);
+        const float pixelDist = static_cast<float>(dist[static_cast<int>(i)]) / static_cast<float>(kAxisCost);
         if (pixelDist > totalPixels)
             continue;
 
@@ -694,9 +694,9 @@ ImagePtr SurfaceRasterizer::createMaskImage(const RasterBuffer& buffer, const Ra
     return image;
 }
 
-int SurfaceRasterizer::toIndex(int x, int y, int width)
+std::size_t SurfaceRasterizer::toIndex(int x, int y, int width)
 {
-    return x + (width * y);
+    return static_cast<std::size_t>(x) + (static_cast<std::size_t>(width) * static_cast<std::size_t>(y));
 }
 
 bool SurfaceRasterizer::pointInTriangle(const Vec3& point,

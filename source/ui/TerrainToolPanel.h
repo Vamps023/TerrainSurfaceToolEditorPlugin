@@ -39,7 +39,7 @@ protected:
 private slots:
     void onApplyPullTerrain();
     void onApplyToMask();
-    void onPaintCompleteWhite();
+    void onEraseHeight();
     void onRefreshLandscapeTiles();
     void refreshSurfaceOptions();
     void checkSelectionChanged();
@@ -64,7 +64,7 @@ private:
     QDoubleSpinBox* spinFalloffDistance = nullptr;
     QPushButton* buttonPull = nullptr;
     QPushButton* buttonMask = nullptr;
-    QPushButton* buttonPaintWhite = nullptr;
+    QPushButton* buttonEraseHeight = nullptr;
     QProgressBar* progressBar = nullptr;
     QTextEdit* statusText = nullptr;
     QTimer* selectionCheckTimer = nullptr;

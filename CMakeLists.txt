@@ -50,21 +50,12 @@ set(binary_name ${target_name}_editorplugin)
 string(APPEND binary_name "_double")
 string(APPEND binary_name "_x64")
 
-include_directories(
-    ${UNIGINE_INCLUDE_DIR}
-    ${UNIGINE_INCLUDE_DIR}/editor
-    ${CMAKE_CURRENT_SOURCE_DIR}/source
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/landscape
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/rasterizer
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/terrain
-    ${CMAKE_CURRENT_SOURCE_DIR}/source/ui
-)
-
 set(SOURCES
     source/core/TerrainSurfaceToolEditorPlugin.cpp
     source/landscape/LandscapeSaveManager.cpp
     source/rasterizer/SurfaceRasterizer.cpp
+    source/terrain/BrushMaterialFactory.cpp
+    source/terrain/DebugImageExporter.cpp
     source/terrain/TerrainManipulator.cpp
     source/terrain/TerrainRasterPlanner.cpp
     source/ui/TerrainToolController.cpp
@@ -77,6 +68,8 @@ set(HEADERS
     source/landscape/LandscapeSaveManager.h
     source/rasterizer/SurfaceQuery.h
     source/rasterizer/SurfaceRasterizer.h
+    source/terrain/BrushMaterialFactory.h
+    source/terrain/DebugImageExporter.h
     source/terrain/TerrainBrushSettings.h
     source/terrain/TerrainManipulator.h
     source/terrain/TerrainRasterPlanner.h
@@ -86,12 +79,25 @@ set(HEADERS
 
 add_library(${target_name} SHARED ${SOURCES} ${HEADERS})
 
+target_include_directories(${target_name}
+    PRIVATE
+        ${UNIGINE_INCLUDE_DIR}
+        ${UNIGINE_INCLUDE_DIR}/editor
+        ${CMAKE_CURRENT_SOURCE_DIR}/source
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/landscape
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/rasterizer
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/terrain
+        ${CMAKE_CURRENT_SOURCE_DIR}/source/ui
+)
+
 target_link_libraries(${target_name}
-    Qt5::Core
-    Qt5::Gui
-    Qt5::Widgets
-    "${UNIGINE_LIB_DIR}/EditorCore_double_x64.lib"
-    "${UNIGINE_LIB_DIR}/Unigine_double_x64.lib"
+    PRIVATE
+        Qt5::Core
+        Qt5::Gui
+        Qt5::Widgets
+        "${UNIGINE_LIB_DIR}/EditorCore_double_x64.lib"
+        "${UNIGINE_LIB_DIR}/Unigine_double_x64.lib"
 )
 
 set_target_properties(${target_name} PROPERTIES
